@@ -167,8 +167,7 @@ function parseScore(scoreStr) {
   const raw = String(scoreStr || "").trim();
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
-  // Normalize whitespace WITHOUT regex.
-    // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
+  // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
   const NL = String.fromCharCode(10);
   const TAB = String.fromCharCode(9);
   let cleaned = raw.split(NL).join(" ").split(TAB).join(" ");
