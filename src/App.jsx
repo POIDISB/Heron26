@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Heron Tennis Summer Ladder 2026 — single-file plain React.
+ * Heron Tennis Summer Ladder 2026 — single-file plain React (NO TypeScript).
  *
  * Features:
  * - Variable player count (default 40, can adjust up/down)
@@ -22,71 +22,26 @@ const STORAGE_KEY = "heron_tennis_ladder_plain_v2";
 const DEFAULT_PLAYER_COUNT = 40;
 const CAPACITY = 60; // hard cap for storage + UI (lets you run 30-50 comfortably)
 const ADMIN_PIN = "2017";
-const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"] as const;
+const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"];
 
-type Surface = (typeof SURFACES)[number];
-
-type Player = {
-  pid: string;
-  position: number;
-  name: string;
-  matchesPlayed: number;
-  matchesWon: number;
-  setsWon: number;
-  setsLost: number;
-  gamesWon: number;
-  gamesLost: number;
-  apr: number;
-  may: number;
-  jun: number;
-  jul: number;
-  aug: number;
-};
-
-type Match = {
-  id: string;
-  date: string; // YYYY-MM-DD
-  positionPlayedFor: number;
-  challengerPid: string;
-  opponentPid: string;
-  winnerId: "p1" | "p2";
-  score: string;
-  surface: string;
-  challengerStartPos: number;
-  opponentStartPos: number;
-  ladderMoveApplied: boolean;
-};
-
-type MatchView = Match & {
-  p1Name: string;
-  p2Name: string;
-  winnerName: string;
-};
-
-type State = {
-  playerCount: number;
-  players: Player[];
-  matches: Match[];
-};
-
-function uid(): string {
+function uid() {
   return Math.random().toString(36).slice(2, 9) + "_" + Date.now().toString(36);
 }
 
-function asNumber(x: unknown, fallback: number): number {
+function asNumber(x, fallback) {
   const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function clamp(n: number, min: number, max: number) {
+function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
-function clampMin0(n: unknown): number {
+function clampMin0(n) {
   return Math.max(0, asNumber(n, 0));
 }
 
-function formatDateISO(d: Date | string): string {
+function formatDateISO(d) {
   const dt = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(dt.getTime())) return "";
   const yyyy = dt.getFullYear();
@@ -95,7 +50,7 @@ function formatDateISO(d: Date | string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function monthKeyFromDateISO(dateISO: string): "apr" | "may" | "jun" | "jul" | "aug" | null {
+function monthKeyFromDateISO(dateISO) {
   const d = new Date(dateISO);
   if (Number.isNaN(d.getTime())) return null;
   const m = d.getMonth();
@@ -107,7 +62,7 @@ function monthKeyFromDateISO(dateISO: string): "apr" | "may" | "jun" | "jul" | "
   return null;
 }
 
-function createEmptyPlayer(position: number): Player {
+function createEmptyPlayer(position) {
   return {
     pid: `p${position}`,
     position,
@@ -126,7 +81,7 @@ function createEmptyPlayer(position: number): Player {
   };
 }
 
-function defaultState(): State {
+function defaultState() {
   return {
     playerCount: DEFAULT_PLAYER_COUNT,
     players: Array.from({ length: CAPACITY }, (_, i) => createEmptyPlayer(i + 1)),
@@ -134,13 +89,13 @@ function defaultState(): State {
   };
 }
 
-function normalizeState(raw: any): State {
+function normalizeState(raw) {
   const base = defaultState();
 
-  const incomingPlayers: any[] = Array.isArray(raw?.players) ? raw.players : base.players;
-  const byPos = new Map<number, any>(incomingPlayers.map((p) => [Number(p.position ?? p.id), p]));
+  const incomingPlayers = Array.isArray(raw?.players) ? raw.players : base.players;
+  const byPos = new Map(incomingPlayers.map((p) => [Number(p.position ?? p.id), p]));
 
-  const players: Player[] = [];
+  const players = [];
   for (let pos = 1; pos <= CAPACITY; pos++) {
     const existing = byPos.get(pos);
     if (!existing) {
@@ -169,8 +124,8 @@ function normalizeState(raw: any): State {
     });
   }
 
-  const matches: Match[] = Array.isArray(raw?.matches)
-    ? raw.matches.map((m: any) => ({
+  const matches = Array.isArray(raw?.matches)
+    ? raw.matches.map((m) => ({
         id: String(m.id ?? uid()),
         date: String(m.date || ""),
         positionPlayedFor: asNumber(m.positionPlayedFor, 1),
@@ -190,7 +145,7 @@ function normalizeState(raw: any): State {
   return { playerCount, players, matches };
 }
 
-function loadState(): State {
+function loadState() {
   if (typeof window === "undefined" || typeof localStorage === "undefined") return defaultState();
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return defaultState();
@@ -201,7 +156,7 @@ function loadState(): State {
   }
 }
 
-function saveState(state: State) {
+function saveState(state) {
   if (typeof window === "undefined" || typeof localStorage === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
@@ -209,13 +164,7 @@ function saveState(state: State) {
 // ---- Score parsing (no regex literals) ----
 // Accepted per-set: 6-0..6-4, 7-5, 7-6, match tie-break 10+ (win by 2)
 
-type ParsedSet = { p1: number; p2: number };
-
-type ParseScoreResult =
-  | { valid: true; sets: ParsedSet[] }
-  | { valid: false; sets: ParsedSet[]; message: string };
-
-function parseScore(scoreStr: string): ParseScoreResult {
+function parseScore(scoreStr) {
   const raw = String(scoreStr || "").trim();
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
@@ -224,7 +173,7 @@ function parseScore(scoreStr: string): ParseScoreResult {
   while (cleaned.includes("  ")) cleaned = cleaned.split("  ").join(" ");
 
   const parts = cleaned.split(" ").filter(Boolean);
-  const sets: ParsedSet[] = [];
+  const sets = [];
 
   for (const part of parts) {
     let a = "";
@@ -256,9 +205,7 @@ function parseScore(scoreStr: string): ParseScoreResult {
   return { valid: true, sets };
 }
 
-type ValidateResult = { ok: true; message: "" } | { ok: false; message: string };
-
-function validateSets(sets: ParsedSet[]): ValidateResult {
+function validateSets(sets) {
   if (!Array.isArray(sets) || sets.length < 2) {
     return { ok: false, message: "Enter at least 2 sets (e.g. 6-4 6-3)." };
   }
@@ -299,7 +246,7 @@ function validateSets(sets: ParsedSet[]): ValidateResult {
   return { ok: true, message: "" };
 }
 
-function computeFromSets(sets: ParsedSet[]) {
+function computeFromSets(sets) {
   let p1Sets = 0,
     p2Sets = 0,
     p1Games = 0,
@@ -331,18 +278,14 @@ const COLS = [
   { key: "jun", label: "Jun" },
   { key: "jul", label: "Jul" },
   { key: "aug", label: "Aug" },
-] as const;
+];
 
-type ColKey = (typeof COLS)[number]["key"];
-
-type CalculatedPlayer = Player & { setDiff: number; gameDiff: number };
-
-function valueForColumn(p: any, colKey: ColKey) {
+function valueForColumn(p, colKey) {
   if (colKey === "name") return String(p.name || "").toLowerCase();
   return p[colKey];
 }
 
-function compareByColumn(a: any, b: any, colKey: ColKey, dir: "asc" | "desc") {
+function compareByColumn(a, b, colKey, dir) {
   const av = valueForColumn(a, colKey);
   const bv = valueForColumn(b, colKey);
   const mul = dir === "asc" ? 1 : -1;
@@ -358,7 +301,7 @@ function compareByColumn(a: any, b: any, colKey: ColKey, dir: "asc" | "desc") {
   return (a.position - b.position) * mul;
 }
 
-function compareLeaderboard(a: any, b: any) {
+function compareLeaderboard(a, b) {
   if ((b.matchesWon ?? 0) !== (a.matchesWon ?? 0)) return (b.matchesWon ?? 0) - (a.matchesWon ?? 0);
   if ((b.setDiff ?? 0) !== (a.setDiff ?? 0)) return (b.setDiff ?? 0) - (a.setDiff ?? 0);
   if ((b.gameDiff ?? 0) !== (a.gameDiff ?? 0)) return (b.gameDiff ?? 0) - (a.gameDiff ?? 0);
@@ -366,7 +309,7 @@ function compareLeaderboard(a: any, b: any) {
   return String(a.name || "").localeCompare(String(b.name || ""));
 }
 
-function applyLadderMove(players: Player[], challengerPid: string, opponentPos: number) {
+function applyLadderMove(players, challengerPid, opponentPos) {
   const challenger = players.find((p) => p.pid === challengerPid);
   if (!challenger) return { players, applied: false };
 
@@ -386,7 +329,7 @@ function applyLadderMove(players: Player[], challengerPid: string, opponentPos: 
   return { players: moved, applied: true };
 }
 
-function reverseLadderMove(players: Player[], challengerPid: string, challengerStartPos: number, opponentStartPos: number) {
+function reverseLadderMove(players, challengerPid, challengerStartPos, opponentStartPos) {
   const ch = players.find((p) => p.pid === challengerPid);
   if (!ch) return players;
 
@@ -403,21 +346,14 @@ function reverseLadderMove(players: Player[], challengerPid: string, challengerS
   return next;
 }
 
-function ladderRowStyle(position: number): React.CSSProperties | undefined {
+function ladderRowStyle(position) {
   if (position === 1) return { background: "rgba(255, 215, 0, 0.25)" };
   if (position === 2) return { background: "rgba(192, 192, 192, 0.25)" };
   if (position === 3) return { background: "rgba(205, 127, 50, 0.22)" };
   return undefined;
 }
 
-function Modal(props: {
-  open: boolean;
-  title: string;
-  children: React.ReactNode;
-  actions?: React.ReactNode;
-  onClose: () => void;
-}) {
-  const { open, title, children, actions, onClose } = props;
+function Modal({ open, title, children, actions, onClose }) {
   if (!open) return null;
   return (
     <div className="modalOverlay" role="dialog" aria-modal="true">
@@ -435,22 +371,14 @@ function Modal(props: {
   );
 }
 
-function StatCell(props: { locked: boolean; value: number; onChange: (v: number) => void }) {
-  const { locked, value, onChange } = props;
+function StatCell({ locked, value, onChange }) {
   if (locked) return <div className="numText">{value}</div>;
   return (
-    <input
-      className="numInput"
-      type="number"
-      min={0}
-      value={value}
-      onChange={(e) => onChange(asNumber(e.target.value, 0))}
-    />
+    <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />
   );
 }
 
-function LeaderCard(props: { medal: string; p?: CalculatedPlayer }) {
-  const { medal, p } = props;
+function LeaderCard({ medal, p }) {
   if (!p) return <div className="leaderCard empty">—</div>;
   return (
     <div className="leaderCard">
@@ -476,11 +404,11 @@ function SelfTests() {
   const [ran, setRan] = useState(false);
 
   useEffect(() => {
-    const w = window as any;
+    const w = window;
     if (!w?.__RUN_LADDER_TESTS__) return;
     if (ran) return;
 
-    const assert = (cond: any, msg: string) => {
+    const assert = (cond, msg) => {
       if (!cond) throw new Error(`Test failed: ${msg}`);
     };
 
@@ -497,7 +425,7 @@ function SelfTests() {
     const psBad = parseScore("hello world");
     assert(!psBad.valid, "parseScore rejects invalid input");
 
-    const base: Player[] = Array.from({ length: 5 }, (_, i) => ({ ...createEmptyPlayer(i + 1), name: `P${i + 1}` }));
+    const base = Array.from({ length: 5 }, (_, i) => ({ ...createEmptyPlayer(i + 1), name: `P${i + 1}` }));
     const moved = applyLadderMove(base, "p5", 2);
     assert(moved.applied, "move applied");
     assert(moved.players.find((p) => p.pid === "p5")?.position === 2, "challenger moved to 2");
@@ -517,7 +445,7 @@ function SelfTests() {
 }
 
 export default function App() {
-  const [state, setState] = useState<State>(() => loadState());
+  const [state, setState] = useState(() => loadState());
   const { players, matches, playerCount } = state;
 
   useEffect(() => {
@@ -528,37 +456,37 @@ export default function App() {
   const [locked, setLocked] = useState(true);
 
   // Sorting
-  const [sortKey, setSortKey] = useState<ColKey>("position");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [sortKey, setSortKey] = useState("position");
+  const [sortDir, setSortDir] = useState("asc");
 
   // Leaderboard
-  const [leaderboardMode, setLeaderboardMode] = useState<"ladder" | "stats">("ladder");
+  const [leaderboardMode, setLeaderboardMode] = useState("ladder");
 
   // Match form
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
   const [matchPos, setMatchPos] = useState("1");
   const [challengerPid, setChallengerPid] = useState("");
-  const [winner, setWinner] = useState<"p1" | "p2">("p2"); // default challenged
-  const [surface, setSurface] = useState<Surface>("Outdoor Hard Court");
+  const [winner, setWinner] = useState("p2"); // default challenged
+  const [surface, setSurface] = useState("Outdoor Hard Court");
   const [score, setScore] = useState("");
   const [error, setError] = useState("");
 
   // Modals
   const [matchAddedOpen, setMatchAddedOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState(null);
 
   // Player results modal
   const [playerModalOpen, setPlayerModalOpen] = useState(false);
-  const [playerModalPid, setPlayerModalPid] = useState<string | null>(null);
+  const [playerModalPid, setPlayerModalPid] = useState(null);
 
   // PIN modal
   const [pinOpen, setPinOpen] = useState(false);
   const [pinValue, setPinValue] = useState("");
   const [pinError, setPinError] = useState("");
-  const [pinPurpose, setPinPurpose] = useState<"unlock" | "add" | "delete">("unlock");
-  const [pinPayload, setPinPayload] = useState<any>(null);
-  const pinRef = useRef<HTMLInputElement | null>(null);
+  const [pinPurpose, setPinPurpose] = useState("unlock");
+  const [pinPayload, setPinPayload] = useState(null);
+  const pinRef = useRef(null);
 
   useEffect(() => {
     // Default winner to the person being challenged (the player at the position).
@@ -571,7 +499,7 @@ export default function App() {
     if (String(mp) !== matchPos) setMatchPos(String(mp));
   }, [playerCount, matchPos]);
 
-  function openPin(purpose: "unlock" | "add" | "delete", payload?: any) {
+  function openPin(purpose, payload) {
     setPinPurpose(purpose);
     setPinPayload(payload || null);
     setPinValue("");
@@ -605,7 +533,7 @@ export default function App() {
     }
 
     if (pinPurpose === "delete") {
-      const matchId = pinPayload?.matchId as string | undefined;
+      const matchId = pinPayload?.matchId;
       if (matchId) {
         setDeleteTargetId(matchId);
         setDeleteConfirmOpen(true);
@@ -613,14 +541,14 @@ export default function App() {
     }
   }
 
-  function updatePlayer(pid: string, field: keyof Player, value: any) {
+  function updatePlayer(pid, field, value) {
     if (locked) return;
     setState((prev) => ({
       ...prev,
       players: prev.players.map((p) => {
         if (p.pid !== pid) return p;
         if (field === "name") return { ...p, name: String(value) };
-        return { ...p, [field]: asNumber(value, 0) } as Player;
+        return { ...p, [field]: asNumber(value, 0) };
       }),
     }));
   }
@@ -629,7 +557,7 @@ export default function App() {
     return players.filter((p) => p.position >= 1 && p.position <= playerCount);
   }, [players, playerCount]);
 
-  const calculatedPlayers: CalculatedPlayer[] = useMemo(() => {
+  const calculatedPlayers = useMemo(() => {
     return visiblePlayers.map((p) => ({
       ...p,
       setDiff: (p.setsWon || 0) - (p.setsLost || 0),
@@ -637,7 +565,7 @@ export default function App() {
     }));
   }, [visiblePlayers]);
 
-  const displayedPlayers: CalculatedPlayer[] = useMemo(() => {
+  const displayedPlayers = useMemo(() => {
     const arr = [...calculatedPlayers];
     arr.sort((a, b) => compareByColumn(a, b, sortKey, sortDir));
     return arr;
@@ -665,9 +593,9 @@ export default function App() {
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
   }, [calculatedPlayers, leaderboardMode]);
 
-  const matchesView: MatchView[] = useMemo(() => {
-    const byPid = new Map(players.map((p) => [p.pid, p] as const));
-    const isActive = (pid: string) => {
+  const matchesView = useMemo(() => {
+    const byPid = new Map(players.map((p) => [p.pid, p]));
+    const isActive = (pid) => {
       const p = byPid.get(pid);
       return p ? p.position >= 1 && p.position <= playerCount : false;
     };
@@ -699,7 +627,7 @@ export default function App() {
   }, [matches, players, playerCount]);
 
   const lastResultByPid = useMemo(() => {
-    const map = new Map<string, "win" | "loss">();
+    const map = new Map();
     for (const m of matchesView) {
       if (!map.has(m.challengerPid)) map.set(m.challengerPid, m.winnerId === "p1" ? "win" : "loss");
       if (!map.has(m.opponentPid)) map.set(m.opponentPid, m.winnerId === "p2" ? "win" : "loss");
@@ -708,14 +636,14 @@ export default function App() {
     return map;
   }, [matchesView, players.length]);
 
-  function latestResultStyle(pid: string): React.CSSProperties | undefined {
+  function latestResultStyle(pid) {
     const r = lastResultByPid.get(pid);
     if (r === "win") return { background: "rgba(34, 197, 94, 0.22)" };
     if (r === "loss") return { background: "rgba(239, 68, 68, 0.22)" };
     return undefined;
   }
 
-  function toggleSort(nextKey: ColKey) {
+  function toggleSort(nextKey) {
     setSortKey((prev) => {
       if (prev !== nextKey) {
         setSortDir("asc");
@@ -726,7 +654,7 @@ export default function App() {
     });
   }
 
-  function sortIndicator(key: ColKey) {
+  function sortIndicator(key) {
     if (sortKey !== key) return "";
     return sortDir === "asc" ? " ▲" : " ▼";
   }
@@ -772,7 +700,7 @@ export default function App() {
     const shouldMove = winner === "p1" && challengerStartPos > opponentStartPos;
     const moved = shouldMove ? applyLadderMove(players, p1.pid, opponentStartPos) : { players, applied: false };
 
-    const matchRecord: Match = {
+    const matchRecord = {
       id: uid(),
       date: matchDate,
       positionPlayedFor: opponentStartPos,
@@ -798,7 +726,7 @@ export default function App() {
           const gamesLost = isP1 ? p2Games : p1Games;
           const didWin = (winner === "p1" && isP1) || (winner === "p2" && !isP1);
 
-          const next: any = {
+          const next = {
             ...p,
             matchesPlayed: (p.matchesPlayed || 0) + 1,
             matchesWon: (p.matchesWon || 0) + (didWin ? 1 : 0),
@@ -807,8 +735,8 @@ export default function App() {
             gamesWon: (p.gamesWon || 0) + gamesWon,
             gamesLost: (p.gamesLost || 0) + gamesLost,
           };
-          if (monthKey) next[monthKey] = (p as any)[monthKey] + 1;
-          return next as Player;
+          if (monthKey) next[monthKey] = (p[monthKey] || 0) + 1;
+          return next;
         })
         .map((p) => {
           if (!moved.applied) return p;
@@ -827,7 +755,7 @@ export default function App() {
     setScore("");
   }
 
-  function requestDeleteMatch(id: string) {
+  function requestDeleteMatch(id) {
     if (locked) return;
     openPin("delete", { matchId: id });
   }
@@ -848,7 +776,7 @@ export default function App() {
     const parsed = parseScore(match.score);
 
     setState((prev) => {
-      let nextPlayers: Player[] = prev.players;
+      let nextPlayers = prev.players;
 
       if (parsed.valid) {
         const validity = validateSets(parsed.sets);
@@ -866,7 +794,7 @@ export default function App() {
             const gamesLost = isP1 ? p2Games : p1Games;
             const didWin = (match.winnerId === "p1" && isP1) || (match.winnerId === "p2" && !isP1);
 
-            const out: any = {
+            const out = {
               ...p,
               matchesPlayed: clampMin0((p.matchesPlayed || 0) - 1),
               matchesWon: clampMin0((p.matchesWon || 0) - (didWin ? 1 : 0)),
@@ -875,8 +803,8 @@ export default function App() {
               gamesWon: clampMin0((p.gamesWon || 0) - gamesWon),
               gamesLost: clampMin0((p.gamesLost || 0) - gamesLost),
             };
-            if (monthKey) out[monthKey] = clampMin0((p as any)[monthKey] - 1);
-            return out as Player;
+            if (monthKey) out[monthKey] = clampMin0((p[monthKey] || 0) - 1);
+            return out;
           });
         }
       }
@@ -956,7 +884,6 @@ export default function App() {
           if (list.length === 0) return <div className="hint">No matches logged for this player yet.</div>;
 
           const pnameBase = players.find((x) => x.pid === pid)?.name || "(Unknown)";
-
           const pObj = players.find((x) => x.pid === pid);
           const pname = pObj && (pObj.position < 1 || pObj.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
 
@@ -1122,7 +1049,6 @@ export default function App() {
         <div className="card">
           <div className="cardHeader">
             <div>
-              {/* Removed the "Ladder" title per request */}
               <div className="hint">Locked = nothing editable.</div>
             </div>
           </div>
@@ -1254,7 +1180,7 @@ export default function App() {
 
               <div>
                 <div className="label">Surface</div>
-                <select className="textInput" value={surface} onChange={(e) => setSurface(e.target.value as Surface)} disabled={locked}>
+                <select className="textInput" value={surface} onChange={(e) => setSurface(e.target.value)} disabled={locked}>
                   {SURFACES.map((s) => (
                     <option key={s} value={s}>
                       {s}
@@ -1265,7 +1191,7 @@ export default function App() {
 
               <div>
                 <div className="label">Winner</div>
-                <select className="textInput" value={winner} onChange={(e) => setWinner(e.target.value as "p1" | "p2")} disabled={locked}>
+                <select className="textInput" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
                   <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
                   <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
                 </select>
@@ -1588,8 +1514,6 @@ const css = `
 
   .label { font-size: 12px; color: var(--muted); font-weight: 750; margin-bottom: 6px; }
 
-  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-  .btnCol { display: flex; flex-direction: column; align-items: stretch; }
   .grow { flex: 1; min-width: 260px; }
 
   /* Live ranking layout */
