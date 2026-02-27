@@ -167,7 +167,8 @@ function parseScore(scoreStr) {
   const raw = String(scoreStr || "").trim();
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
-  // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
+  // Normalize whitespace WITHOUT regex.
+    // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
   const NL = String.fromCharCode(10);
   const TAB = String.fromCharCode(9);
   let cleaned = raw.split(NL).join(" ").split(TAB).join(" ");
@@ -409,10 +410,12 @@ function SelfTests() {
     assert(!validateSets([{ p1: 6, p2: 4 }, { p1: 4, p2: 6 }]).ok, "1-1 sets tie invalid");
     assert(!validateSets([{ p1: 10, p2: 9 }, { p1: 6, p2: 4 }]).ok, "TB 10-9 invalid (not win by 2)");
 
-    const ps1 = parseScore("6-4
-6-3");
+        const NL = String.fromCharCode(10);
+    const TAB = String.fromCharCode(9);
+
+    const ps1 = parseScore("6-4" + NL + "6-3");
     assert(ps1.valid && ps1.sets.length === 2, "parseScore accepts newlines");
-    const ps2 = parseScore("6-4	6-3");
+    const ps2 = parseScore("6-4" + TAB + "6-3");
     assert(ps2.valid && ps2.sets.length === 2, "parseScore accepts tabs");
     const psBad = parseScore("hello world");
     assert(!psBad.valid, "parseScore rejects invalid input");
