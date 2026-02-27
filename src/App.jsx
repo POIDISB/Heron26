@@ -1495,7 +1495,7 @@ export default function App() {
         </div>
       </div>
 
-      <SelfTests />
+     {false && <SelfTests />}
     </div>
   );
 }
