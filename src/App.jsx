@@ -8,17 +8,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * - Sorting by any column (display-only)
  * - Locked by default: NOTHING editable
  * - Admin unlock PIN = 2017
- * - Extra-safe: Add Match and Delete always prompt for PIN
+ * - Extra-safe: Add Match, Delete Match, and Edit Match always prompt for PIN
  * - Score validation (no impossible sets)
  * - Surface stored + shown in match history
- * - Upset ladder move (challenger beats higher player) + reversal on delete
+ * - Upset ladder move (challenger beats higher player) + reversal on delete/edit
  * - localStorage persistence
  * - Latest result highlight on player name: win=green, loss=red
- * - When locked: clicking a player name shows all their results
+ * - When locked: clicking a player name shows all their results (most recent first)
  */
 
-// Bumped storage key because the month columns changed and player-count is now dynamic.
-const STORAGE_KEY = "heron_tennis_ladder_plain_v2";
+// Bumped storage key because the month columns changed and player-count is dynamic.
+const STORAGE_KEY = "heron_tennis_ladder_plain_v3";
 const DEFAULT_PLAYER_COUNT = 40;
 const CAPACITY = 60; // hard cap for storage + UI (lets you run 30-50 comfortably)
 const ADMIN_PIN = "2017";
@@ -103,7 +103,6 @@ function normalizeState(raw) {
       continue;
     }
 
-    // NOTE: If you previously used Dec/Jan/Feb/Mar, we don't carry those forward.
     players.push({
       ...createEmptyPlayer(pos),
       ...existing,
@@ -169,7 +168,8 @@ function parseScore(scoreStr) {
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
   // Normalize whitespace WITHOUT regex.
-  let cleaned = raw.split("\n").join(" ").split("\t").join(" ");
+  let cleaned = raw.split("
+").join(" ").split("	").join(" ");
   while (cleaned.includes("  ")) cleaned = cleaned.split("  ").join(" ");
 
   const parts = cleaned.split(" ").filter(Boolean);
@@ -273,11 +273,11 @@ const COLS = [
   { key: "gamesWon", label: "Games Won" },
   { key: "gamesLost", label: "Games Lost" },
   { key: "gameDiff", label: "Game Diff" },
-  { key: "apr", label: "Apr" },
-  { key: "may", label: "May" },
-  { key: "jun", label: "Jun" },
-  { key: "jul", label: "Jul" },
-  { key: "aug", label: "Aug" },
+  { key: "apr", label: "Apr Matches" },
+  { key: "may", label: "May Matches" },
+  { key: "jun", label: "Jun Matches" },
+  { key: "jul", label: "Jul Matches" },
+  { key: "aug", label: "Aug Matches" },
 ];
 
 function valueForColumn(p, colKey) {
@@ -299,14 +299,6 @@ function compareByColumn(a, b, colKey, dir) {
   const bs = String(bv);
   if (as !== bs) return as.localeCompare(bs) * mul;
   return (a.position - b.position) * mul;
-}
-
-function compareLeaderboard(a, b) {
-  if ((b.matchesWon ?? 0) !== (a.matchesWon ?? 0)) return (b.matchesWon ?? 0) - (a.matchesWon ?? 0);
-  if ((b.setDiff ?? 0) !== (a.setDiff ?? 0)) return (b.setDiff ?? 0) - (a.setDiff ?? 0);
-  if ((b.gameDiff ?? 0) !== (a.gameDiff ?? 0)) return (b.gameDiff ?? 0) - (a.gameDiff ?? 0);
-  if ((a.matchesPlayed ?? 0) !== (b.matchesPlayed ?? 0)) return (a.matchesPlayed ?? 0) - (b.matchesPlayed ?? 0);
-  return String(a.name || "").localeCompare(String(b.name || ""));
 }
 
 function applyLadderMove(players, challengerPid, opponentPos) {
@@ -373,9 +365,7 @@ function Modal({ open, title, children, actions, onClose }) {
 
 function StatCell({ locked, value, onChange }) {
   if (locked) return <div className="numText">{value}</div>;
-  return (
-    <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />
-  );
+  return <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />;
 }
 
 function LeaderCard({ medal, p }) {
@@ -418,9 +408,10 @@ function SelfTests() {
     assert(!validateSets([{ p1: 6, p2: 4 }, { p1: 4, p2: 6 }]).ok, "1-1 sets tie invalid");
     assert(!validateSets([{ p1: 10, p2: 9 }, { p1: 6, p2: 4 }]).ok, "TB 10-9 invalid (not win by 2)");
 
-    const ps1 = parseScore("6-4\n6-3");
+    const ps1 = parseScore("6-4
+6-3");
     assert(ps1.valid && ps1.sets.length === 2, "parseScore accepts newlines");
-    const ps2 = parseScore("6-4\t6-3");
+    const ps2 = parseScore("6-4	6-3");
     assert(ps2.valid && ps2.sets.length === 2, "parseScore accepts tabs");
     const psBad = parseScore("hello world");
     assert(!psBad.valid, "parseScore rejects invalid input");
@@ -459,9 +450,6 @@ export default function App() {
   const [sortKey, setSortKey] = useState("position");
   const [sortDir, setSortDir] = useState("asc");
 
-  // Leaderboard
-  const [leaderboardMode, setLeaderboardMode] = useState("ladder");
-
   // Match form
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
   const [matchPos, setMatchPos] = useState("1");
@@ -479,6 +467,15 @@ export default function App() {
   // Player results modal
   const [playerModalOpen, setPlayerModalOpen] = useState(false);
   const [playerModalPid, setPlayerModalPid] = useState(null);
+
+  // Edit match modal
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTargetId, setEditTargetId] = useState(null);
+  const [editDate, setEditDate] = useState("");
+  const [editSurface, setEditSurface] = useState(SURFACES[2]);
+  const [editScore, setEditScore] = useState("");
+  const [editWinner, setEditWinner] = useState("p2");
+  const [editError, setEditError] = useState("");
 
   // PIN modal
   const [pinOpen, setPinOpen] = useState(false);
@@ -528,6 +525,10 @@ export default function App() {
     }
 
     if (pinPurpose === "add") {
+      if (pinPayload?.edit) {
+        applyEditWithPin();
+        return;
+      }
       actuallyAddMatch();
       return;
     }
@@ -587,11 +588,11 @@ export default function App() {
       .sort((a, b) => a.position - b.position);
   }, [players, playerCount]);
 
+  // Live ranking: Top 3 by ladder order (no toggle)
   const leaderboardTop3 = useMemo(() => {
     const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
-    if (leaderboardMode === "stats") return [...named].sort(compareLeaderboard).slice(0, 3);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
-  }, [calculatedPlayers, leaderboardMode]);
+  }, [calculatedPlayers]);
 
   const matchesView = useMemo(() => {
     const byPid = new Map(players.map((p) => [p.pid, p]));
@@ -824,18 +825,170 @@ export default function App() {
     setDeleteTargetId(null);
   }
 
+  function openEditMatch(id) {
+    if (locked) return;
+    const m = matchesView.find((x) => x.id === id);
+    if (!m) return;
+
+    setEditTargetId(id);
+    setEditDate(m.date || formatDateISO(new Date()));
+    setEditSurface(m.surface || SURFACES[2]);
+    setEditScore(m.score || "");
+    setEditWinner(m.winnerId || "p2");
+    setEditError("");
+    setEditOpen(true);
+  }
+
+  function closeEdit() {
+    setEditOpen(false);
+    setEditTargetId(null);
+    setEditError("");
+  }
+
+  function requestSaveEdit() {
+    if (locked) return;
+    openPin("add", { edit: true });
+  }
+
+  function applyEditWithPin() {
+    const id = editTargetId;
+    if (!id) return;
+
+    const match = matches.find((m) => m.id === id);
+    if (!match) return;
+
+    // Validate new score
+    const parsedNew = parseScore(editScore);
+    if (!parsedNew.valid) {
+      setEditError(parsedNew.message || "Score not recognised.");
+      return;
+    }
+    const validNew = validateSets(parsedNew.sets);
+    if (!validNew.ok) {
+      setEditError(validNew.message);
+      return;
+    }
+
+    // Validate old score so we can reverse safely
+    const parsedOld = parseScore(match.score);
+    if (!parsedOld.valid) {
+      setEditError("Original match score is invalid, cannot safely edit this match.");
+      return;
+    }
+    const validOld = validateSets(parsedOld.sets);
+    if (!validOld.ok) {
+      setEditError("Original match score is invalid, cannot safely edit this match.");
+      return;
+    }
+
+    const oldTotals = computeFromSets(parsedOld.sets);
+    const newTotals = computeFromSets(parsedNew.sets);
+
+    const oldMonthKey = monthKeyFromDateISO(match.date);
+    const newMonthKey = monthKeyFromDateISO(editDate);
+
+    setState((prev) => {
+      // 1) reverse old stats
+      let nextPlayers = prev.players.map((p) => {
+        if (p.pid !== match.challengerPid && p.pid !== match.opponentPid) return p;
+
+        const isP1 = p.pid === match.challengerPid;
+        const setsWonOld = isP1 ? oldTotals.p1Sets : oldTotals.p2Sets;
+        const setsLostOld = isP1 ? oldTotals.p2Sets : oldTotals.p1Sets;
+        const gamesWonOld = isP1 ? oldTotals.p1Games : oldTotals.p2Games;
+        const gamesLostOld = isP1 ? oldTotals.p2Games : oldTotals.p1Games;
+        const didWinOld = (match.winnerId === "p1" && isP1) || (match.winnerId === "p2" && !isP1);
+
+        const out = {
+          ...p,
+          matchesPlayed: clampMin0((p.matchesPlayed || 0) - 1),
+          matchesWon: clampMin0((p.matchesWon || 0) - (didWinOld ? 1 : 0)),
+          setsWon: clampMin0((p.setsWon || 0) - setsWonOld),
+          setsLost: clampMin0((p.setsLost || 0) - setsLostOld),
+          gamesWon: clampMin0((p.gamesWon || 0) - gamesWonOld),
+          gamesLost: clampMin0((p.gamesLost || 0) - gamesLostOld),
+        };
+        if (oldMonthKey) out[oldMonthKey] = clampMin0((p[oldMonthKey] || 0) - 1);
+        return out;
+      });
+
+      // 2) reverse ladder move if applied
+      if (match.ladderMoveApplied) {
+        nextPlayers = reverseLadderMove(nextPlayers, match.challengerPid, match.challengerStartPos, match.opponentStartPos);
+      }
+
+      // 3) apply new stats
+      nextPlayers = nextPlayers.map((p) => {
+        if (p.pid !== match.challengerPid && p.pid !== match.opponentPid) return p;
+
+        const isP1 = p.pid === match.challengerPid;
+        const setsWonNew = isP1 ? newTotals.p1Sets : newTotals.p2Sets;
+        const setsLostNew = isP1 ? newTotals.p2Sets : newTotals.p1Sets;
+        const gamesWonNew = isP1 ? newTotals.p1Games : newTotals.p2Games;
+        const gamesLostNew = isP1 ? newTotals.p2Games : newTotals.p1Games;
+        const didWinNew = (editWinner === "p1" && isP1) || (editWinner === "p2" && !isP1);
+
+        const next = {
+          ...p,
+          matchesPlayed: (p.matchesPlayed || 0) + 1,
+          matchesWon: (p.matchesWon || 0) + (didWinNew ? 1 : 0),
+          setsWon: (p.setsWon || 0) + setsWonNew,
+          setsLost: (p.setsLost || 0) + setsLostNew,
+          gamesWon: (p.gamesWon || 0) + gamesWonNew,
+          gamesLost: (p.gamesLost || 0) + gamesLostNew,
+        };
+        if (newMonthKey) next[newMonthKey] = (p[newMonthKey] || 0) + 1;
+        return next;
+      });
+
+      // 4) apply ladder move if the new result triggers it
+      const challengerPlayer = nextPlayers.find((p) => p.pid === match.challengerPid);
+      const opponentPlayer = nextPlayers.find((p) => p.pid === match.opponentPid);
+
+      let ladderApplied = false;
+      let movedPlayers = nextPlayers;
+      if (challengerPlayer && opponentPlayer) {
+        const shouldMoveNew = editWinner === "p1" && challengerPlayer.position > opponentPlayer.position;
+        if (shouldMoveNew) {
+          const moved = applyLadderMove(movedPlayers, challengerPlayer.pid, opponentPlayer.position);
+          movedPlayers = moved.players;
+          ladderApplied = moved.applied;
+        }
+      }
+
+      // 5) update match record
+      const updatedMatches = prev.matches.map((m) => {
+        if (m.id !== id) return m;
+        return {
+          ...m,
+          date: editDate,
+          surface: editSurface,
+          score: String(editScore || "").trim(),
+          winnerId: editWinner,
+          ladderMoveApplied: ladderApplied,
+        };
+      });
+
+      return { ...prev, players: movedPlayers, matches: updatedMatches };
+    });
+
+    closeEdit();
+  }
+
   const pinTitle =
     pinPurpose === "unlock"
       ? "Admin unlock"
       : pinPurpose === "add"
-      ? "Admin PIN required to add match"
+      ? pinPayload?.edit
+        ? "Admin PIN required to save edits"
+        : "Admin PIN required to add match"
       : "Admin PIN required to delete match";
 
   const pinHint =
     pinPurpose === "unlock"
       ? "Unlock editing for this session."
       : pinPurpose === "add"
-      ? "PIN required right before saving this match."
+      ? "PIN required right before saving."
       : "PIN required before requesting a delete.";
 
   return (
@@ -984,6 +1137,61 @@ export default function App() {
         <div className="hint">This removes the match and reverses its stats/ladder movement.</div>
       </Modal>
 
+      {/* Edit match */}
+      <Modal
+        open={editOpen}
+        title="Edit match"
+        onClose={closeEdit}
+        actions={
+          <>
+            <button className="btnGhost" onClick={closeEdit}>
+              Cancel
+            </button>
+            <button className="btn" onClick={requestSaveEdit}>
+              Save changes
+            </button>
+          </>
+        }
+      >
+        {editError ? <div className="errorBox">{editError}</div> : null}
+
+        <div className="label">Date</div>
+        <input className="textInput" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
+
+        <div style={{ height: 10 }} />
+
+        <div className="label">Surface</div>
+        <select className="textInput" value={editSurface} onChange={(e) => setEditSurface(e.target.value)}>
+          {SURFACES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+
+        <div style={{ height: 10 }} />
+
+        <div className="label">Winner</div>
+        <select className="textInput" value={editWinner} onChange={(e) => setEditWinner(e.target.value)}>
+          {(() => {
+            const m = matchesView.find((x) => x.id === editTargetId);
+            if (!m) return null;
+            return (
+              <>
+                <option value="p1">{m.p1Name}</option>
+                <option value="p2">{m.p2Name}</option>
+              </>
+            );
+          })()}
+        </select>
+
+        <div style={{ height: 10 }} />
+
+        <div className="label">Score</div>
+        <input className="textInput" value={editScore} onChange={(e) => setEditScore(e.target.value)} />
+        <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
+      </Modal>
+
       <div className="container">
         {/* Title + actions */}
         <div className="card" style={{ marginBottom: 14 }}>
@@ -1022,14 +1230,6 @@ export default function App() {
               <div>
                 <div className="cardTitle">Live ranking</div>
                 <div className="hint">Top 3</div>
-              </div>
-              <div className="seg">
-                <button className={leaderboardMode === "ladder" ? "segBtn segOn" : "segBtn"} onClick={() => setLeaderboardMode("ladder")}>
-                  Ladder
-                </button>
-                <button className={leaderboardMode === "stats" ? "segBtn segOn" : "segBtn"} onClick={() => setLeaderboardMode("stats")}>
-                  Stats
-                </button>
               </div>
             </div>
 
@@ -1086,12 +1286,7 @@ export default function App() {
                             {p.name || "—"}
                           </button>
                         ) : (
-                          <input
-                            className="textInput"
-                            value={p.name}
-                            placeholder="Player name"
-                            onChange={(e) => updatePlayer(p.pid, "name", e.target.value)}
-                          />
+                          <input className="textInput" value={p.name} placeholder="Player name" onChange={(e) => updatePlayer(p.pid, "name", e.target.value)} />
                         )}
                       </td>
                       <td>
@@ -1141,7 +1336,7 @@ export default function App() {
           <div className="cardHeader">
             <div>
               <div className="cardTitle">Add Match</div>
-              <div className="hint">Add/Delete always require PIN (2017). Default winner is the challenged player.</div>
+              <div className="hint">Add/Delete/Edit always require PIN (2017). Default winner is the challenged player.</div>
             </div>
           </div>
           <div className="cardBody">
@@ -1156,11 +1351,16 @@ export default function App() {
               <div>
                 <div className="label">Position being played for</div>
                 <select className="textInput" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
-                  {Array.from({ length: playerCount }, (_, i) => (
-                    <option key={i + 1} value={String(i + 1)}>
-                      #{i + 1}
-                    </option>
-                  ))}
+                  {Array.from({ length: playerCount }, (_, i) => {
+                    const pos = i + 1;
+                    const pp = players.find((x) => x.position === pos);
+                    const nm = pp?.name?.trim();
+                    return (
+                      <option key={pos} value={String(pos)}>
+                        #{pos}{nm ? ` (${nm})` : ""}
+                      </option>
+                    );
+                  })}
                 </select>
                 <div className="hint">Opponent: {opponent?.name?.trim() ? opponent.name : "(no name yet)"}</div>
               </div>
@@ -1200,13 +1400,7 @@ export default function App() {
 
             <div style={{ marginTop: 12 }}>
               <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-              <input
-                className="textInput"
-                value={score}
-                onChange={(e) => setScore(e.target.value)}
-                placeholder="e.g. 6-4 3-6 10-8"
-                disabled={locked}
-              />
+              <input className="textInput" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
               <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
 
               <div style={{ marginTop: 10 }}>
@@ -1249,9 +1443,14 @@ export default function App() {
                         <td>{m.winnerName}</td>
                         <td className="mono">{m.score}</td>
                         <td style={{ textAlign: "right" }}>
-                          <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>
-                            Delete
-                          </button>
+                          <div style={{ display: "inline-flex", gap: 8 }}>
+                            <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m.id)}>
+                              Edit
+                            </button>
+                            <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1279,23 +1478,6 @@ export default function App() {
                   }}
                 />
                 <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
-              </div>
-
-              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  className="btnGhost"
-                  disabled={locked || playerCount >= CAPACITY}
-                  onClick={() => setState((prev) => ({ ...prev, playerCount: clamp(prev.playerCount + 1, 2, CAPACITY) }))}
-                >
-                  + Add 1
-                </button>
-                <button
-                  className="btnGhost"
-                  disabled={locked || playerCount <= 2}
-                  onClick={() => setState((prev) => ({ ...prev, playerCount: clamp(prev.playerCount - 1, 2, CAPACITY) }))}
-                >
-                  − Remove 1
-                </button>
               </div>
             </div>
             <div className="hint">
@@ -1386,18 +1568,6 @@ const css = `
     opacity: 0.45;
     cursor: not-allowed;
   }
-
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  .segBtn {
-    background: transparent;
-    color: var(--muted);
-    border: 0;
-    padding: 8px 10px;
-    cursor: pointer;
-    font-weight: 800;
-    font-size: 12px;
-  }
-  .segOn { background: rgba(255,255,255,0.10); color: var(--text); }
 
   .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
   .error { color: rgba(255, 140, 140, 1); font-size: 13px; margin-top: 8px; }
@@ -1514,8 +1684,6 @@ const css = `
 
   .label { font-size: 12px; color: var(--muted); font-weight: 750; margin-bottom: 6px; }
 
-  .grow { flex: 1; min-width: 260px; }
-
   /* Live ranking layout */
   .liveHeader {
     display: flex;
@@ -1544,6 +1712,8 @@ const css = `
     padding: 12px;
     background: rgba(255,255,255,0.04);
     min-height: 92px;
+    /* rounder + more legible */
+    font-family: ui-rounded, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   }
 
   .leaderCard.empty {
@@ -1555,7 +1725,7 @@ const css = `
 
   .leaderMedal { font-size: 18px; }
   .leaderName { font-weight: 900; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .leaderStats { font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.88); margin-top: 8px; }
+  .leaderStats { font-size: 14px; font-weight: 850; color: rgba(255,255,255,0.92); margin-top: 8px; }
 
   .playerMatchList { display: flex; flex-direction: column; gap: 10px; }
   .playerMatchRow {
