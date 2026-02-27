@@ -168,8 +168,10 @@ function parseScore(scoreStr) {
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
   // Normalize whitespace WITHOUT regex.
-  let cleaned = raw.split("
-").join(" ").split("	").join(" ");
+    // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
+  const NL = String.fromCharCode(10);
+  const TAB = String.fromCharCode(9);
+  let cleaned = raw.split(NL).join(" ").split(TAB).join(" ");
   while (cleaned.includes("  ")) cleaned = cleaned.split("  ").join(" ");
 
   const parts = cleaned.split(" ").filter(Boolean);
