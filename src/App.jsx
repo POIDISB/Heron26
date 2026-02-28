@@ -1,28 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 /**
- * Heron Tennis Summer Ladder 2026 — single-file plain React (NO TypeScript).
+ * Heron Tennis Summer Ladder 2026 — plain React + Supabase (shared realtime).
  *
- * Features:
- * - Variable player count (default 40, can adjust up/down)
- * - Sorting by any column (display-only)
- * - Locked by default: NOTHING editable
- * - Admin unlock PIN = 2017
- * - Extra-safe: Add Match, Delete Match, and Edit Match always prompt for PIN
- * - Score validation (no impossible sets)
- * - Surface stored + shown in match history
- * - Upset ladder move (challenger beats higher player) + reversal on delete/edit
- * - localStorage persistence
- * - Latest result highlight on player name: win=green, loss=red
- * - When locked: clicking a player name shows all their results (most recent first)
+ * What changed vs localStorage version:
+ * - Reads players/matches/playerCount from Supabase on startup
+ * - Subscribes to realtime changes (players/matches/settings) and refetches
+ * - Writes are done through /api/admin (server checks ADMIN_PIN)
+ * - Frontend never uses Supabase service role key
  */
 
-// Bumped storage key because the month columns changed and player-count is dynamic.
-const STORAGE_KEY = "heron_tennis_ladder_plain_v3";
 const DEFAULT_PLAYER_COUNT = 40;
-const CAPACITY = 60; // hard cap for storage + UI (lets you run 30-50 comfortably)
-const ADMIN_PIN = "2017";
-const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"];
+const CAPACITY = 60; // hard cap
+const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"]; // display + storage
+
+// Supabase public client (read-only; write is blocked by RLS)
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 function uid() {
   return Math.random().toString(36).slice(2, 9) + "_" + Date.now().toString(36);
@@ -89,77 +85,6 @@ function defaultState() {
   };
 }
 
-function normalizeState(raw) {
-  const base = defaultState();
-
-  const incomingPlayers = Array.isArray(raw?.players) ? raw.players : base.players;
-  const byPos = new Map(incomingPlayers.map((p) => [Number(p.position ?? p.id), p]));
-
-  const players = [];
-  for (let pos = 1; pos <= CAPACITY; pos++) {
-    const existing = byPos.get(pos);
-    if (!existing) {
-      players.push(createEmptyPlayer(pos));
-      continue;
-    }
-
-    players.push({
-      ...createEmptyPlayer(pos),
-      ...existing,
-      pid: String(existing.pid ?? existing.playerId ?? existing.id ?? `p${pos}`),
-      position: pos,
-      name: String(existing.name || ""),
-      matchesPlayed: asNumber(existing.matchesPlayed, 0),
-      matchesWon: asNumber(existing.matchesWon, 0),
-      setsWon: asNumber(existing.setsWon, 0),
-      setsLost: asNumber(existing.setsLost, 0),
-      gamesWon: asNumber(existing.gamesWon, 0),
-      gamesLost: asNumber(existing.gamesLost, 0),
-      apr: asNumber(existing.apr, 0),
-      may: asNumber(existing.may, 0),
-      jun: asNumber(existing.jun, 0),
-      jul: asNumber(existing.jul, 0),
-      aug: asNumber(existing.aug, 0),
-    });
-  }
-
-  const matches = Array.isArray(raw?.matches)
-    ? raw.matches.map((m) => ({
-        id: String(m.id ?? uid()),
-        date: String(m.date || ""),
-        positionPlayedFor: asNumber(m.positionPlayedFor, 1),
-        challengerPid: String(m.challengerPid || ""),
-        opponentPid: String(m.opponentPid || ""),
-        winnerId: m.winnerId === "p1" || m.winnerId === "p2" ? m.winnerId : "p2",
-        score: String(m.score || ""),
-        surface: String(m.surface || ""),
-        challengerStartPos: asNumber(m.challengerStartPos, 0),
-        opponentStartPos: asNumber(m.opponentStartPos, 0),
-        ladderMoveApplied: Boolean(m.ladderMoveApplied),
-      }))
-    : [];
-
-  const playerCount = clamp(asNumber(raw?.playerCount, DEFAULT_PLAYER_COUNT), 2, CAPACITY);
-
-  return { playerCount, players, matches };
-}
-
-function loadState() {
-  if (typeof window === "undefined" || typeof localStorage === "undefined") return defaultState();
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return defaultState();
-  try {
-    return normalizeState(JSON.parse(raw));
-  } catch {
-    return defaultState();
-  }
-}
-
-function saveState(state) {
-  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
 // ---- Score parsing (no regex literals) ----
 // Accepted per-set: 6-0..6-4, 7-5, 7-6, match tie-break 10+ (win by 2)
 
@@ -167,8 +92,7 @@ function parseScore(scoreStr) {
   const raw = String(scoreStr || "").trim();
   if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
 
-  // Normalize whitespace WITHOUT regex.
-    // Normalize whitespace WITHOUT regex (avoid escape sequences for build tooling).
+  // Normalize whitespace WITHOUT regex (avoid escape sequences getting mangled in deployments)
   const NL = String.fromCharCode(10);
   const TAB = String.fromCharCode(9);
   let cleaned = raw.split(NL).join(" ").split(TAB).join(" ");
@@ -303,6 +227,14 @@ function compareByColumn(a, b, colKey, dir) {
   return (a.position - b.position) * mul;
 }
 
+function compareLeaderboard(a, b) {
+  if ((b.matchesWon ?? 0) !== (a.matchesWon ?? 0)) return (b.matchesWon ?? 0) - (a.matchesWon ?? 0);
+  if ((b.setDiff ?? 0) !== (a.setDiff ?? 0)) return (b.setDiff ?? 0) - (a.setDiff ?? 0);
+  if ((b.gameDiff ?? 0) !== (a.gameDiff ?? 0)) return (b.gameDiff ?? 0) - (a.gameDiff ?? 0);
+  if ((a.matchesPlayed ?? 0) !== (b.matchesPlayed ?? 0)) return (a.matchesPlayed ?? 0) - (b.matchesPlayed ?? 0);
+  return String(a.name || "").localeCompare(String(b.name || ""));
+}
+
 function applyLadderMove(players, challengerPid, opponentPos) {
   const challenger = players.find((p) => p.pid === challengerPid);
   if (!challenger) return { players, applied: false };
@@ -367,7 +299,9 @@ function Modal({ open, title, children, actions, onClose }) {
 
 function StatCell({ locked, value, onChange }) {
   if (locked) return <div className="numText">{value}</div>;
-  return <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />;
+  return (
+    <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />
+  );
 }
 
 function LeaderCard({ medal, p }) {
@@ -378,7 +312,7 @@ function LeaderCard({ medal, p }) {
       <div className="leaderName" title={p.name}>
         {p.name}
       </div>
-      <div className="hint" style={{ marginTop: 2 }}>
+      <div className="leaderSub" style={{ marginTop: 4 }}>
         Pos #{p.position}
       </div>
       <div className="leaderStats mono">
@@ -397,7 +331,7 @@ function SelfTests() {
 
   useEffect(() => {
     const w = window;
-    if (!w?.__RUN_LADDER_TESTS__) return;
+    if (!w || !w.__RUN_LADDER_TESTS__) return;
     if (ran) return;
 
     const assert = (cond, msg) => {
@@ -419,6 +353,9 @@ function SelfTests() {
     const ps2 = parseScore("6-4" + TAB + "6-3");
     assert(ps2.valid && ps2.sets.length === 2, "parseScore accepts tabs");
 
+    const psBad = parseScore("hello world");
+    assert(!psBad.valid, "parseScore rejects invalid input");
+
     const base = Array.from({ length: 5 }, (_, i) => ({ ...createEmptyPlayer(i + 1), name: `P${i + 1}` }));
     const moved = applyLadderMove(base, "p5", 2);
     assert(moved.applied, "move applied");
@@ -438,13 +375,97 @@ function SelfTests() {
   return null;
 }
 
+async function fetchCloudState() {
+  if (!supabase) throw new Error("Supabase client not configured. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+
+  const [pRes, mRes, sRes] = await Promise.all([
+    supabase.from("players").select("*").order("position", { ascending: true }),
+    supabase.from("matches").select("*").order("created_at", { ascending: false }),
+    supabase.from("settings").select("*").eq("key", "playerCount").maybeSingle(),
+  ]);
+
+  if (pRes.error) throw new Error(pRes.error.message);
+  if (mRes.error) throw new Error(mRes.error.message);
+  if (sRes.error) throw new Error(sRes.error.message);
+
+  const base = defaultState();
+
+  const byPos = new Map();
+  for (const row of pRes.data || []) {
+    byPos.set(Number(row.position), row);
+  }
+
+  const players = [];
+  for (let pos = 1; pos <= CAPACITY; pos++) {
+    const row = byPos.get(pos);
+    if (!row) {
+      players.push(createEmptyPlayer(pos));
+      continue;
+    }
+    players.push({
+      ...createEmptyPlayer(pos),
+      pid: String(row.pid ?? `p${pos}`),
+      position: pos,
+      name: String(row.name || ""),
+      matchesPlayed: asNumber(row.matches_played, 0),
+      matchesWon: asNumber(row.matches_won, 0),
+      setsWon: asNumber(row.sets_won, 0),
+      setsLost: asNumber(row.sets_lost, 0),
+      gamesWon: asNumber(row.games_won, 0),
+      gamesLost: asNumber(row.games_lost, 0),
+      apr: asNumber(row.apr, 0),
+      may: asNumber(row.may, 0),
+      jun: asNumber(row.jun, 0),
+      jul: asNumber(row.jul, 0),
+      aug: asNumber(row.aug, 0),
+    });
+  }
+
+  const matches = (mRes.data || []).map((row) => ({
+    id: String(row.id),
+    date: String(row.date || ""),
+    positionPlayedFor: asNumber(row.position_played_for, 1),
+    challengerPid: String(row.challenger_pid || ""),
+    opponentPid: String(row.opponent_pid || ""),
+    winnerId: row.winner_id === "p1" || row.winner_id === "p2" ? row.winner_id : "p2",
+    score: String(row.score || ""),
+    surface: String(row.surface || ""),
+    challengerStartPos: asNumber(row.challenger_start_pos, 0),
+    opponentStartPos: asNumber(row.opponent_start_pos, 0),
+    ladderMoveApplied: Boolean(row.ladder_move_applied),
+  }));
+
+  const playerCount = clamp(asNumber(sRes.data?.value ?? base.playerCount, base.playerCount), 2, CAPACITY);
+
+  return { playerCount, players, matches };
+}
+
+async function saveCloudState(pin, state) {
+  const res = await fetch("/api/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      pin,
+      action: "saveState",
+      payload: {
+        playerCount: state.playerCount,
+        players: state.players,
+        matches: state.matches,
+      },
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Failed to save.");
+  return data;
+}
+
 export default function App() {
-  const [state, setState] = useState(() => loadState());
+  const [state, setState] = useState(() => defaultState());
   const { players, matches, playerCount } = state;
 
-  useEffect(() => {
-    saveState(state);
-  }, [state]);
+  // Cloud status
+  const [cloudError, setCloudError] = useState("");
+  const [cloudLoading, setCloudLoading] = useState(true);
 
   // Locking
   const [locked, setLocked] = useState(true);
@@ -452,6 +473,9 @@ export default function App() {
   // Sorting
   const [sortKey, setSortKey] = useState("position");
   const [sortDir, setSortDir] = useState("asc");
+
+  // Live top 3 (ladder order by default)
+  const [leaderboardMode, setLeaderboardMode] = useState("ladder"); // kept for compatibility but no toggle shown
 
   // Match form
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
@@ -473,28 +497,80 @@ export default function App() {
 
   // Edit match modal
   const [editOpen, setEditOpen] = useState(false);
-  const [editTargetId, setEditTargetId] = useState(null);
+  const [editId, setEditId] = useState(null);
   const [editDate, setEditDate] = useState("");
-  const [editSurface, setEditSurface] = useState(SURFACES[2]);
-  const [editScore, setEditScore] = useState("");
+  const [editSurface, setEditSurface] = useState("Outdoor Hard Court");
   const [editWinner, setEditWinner] = useState("p2");
+  const [editScore, setEditScore] = useState("");
   const [editError, setEditError] = useState("");
 
   // PIN modal
   const [pinOpen, setPinOpen] = useState(false);
   const [pinValue, setPinValue] = useState("");
   const [pinError, setPinError] = useState("");
-  const [pinPurpose, setPinPurpose] = useState("unlock");
+  const [pinPurpose, setPinPurpose] = useState("unlock"); // unlock | add | delete | edit
   const [pinPayload, setPinPayload] = useState(null);
   const pinRef = useRef(null);
 
+  // Load from cloud on startup + subscribe to realtime
   useEffect(() => {
-    // Default winner to the person being challenged (the player at the position).
+    let alive = true;
+
+    async function load() {
+      setCloudError("");
+      setCloudLoading(true);
+      try {
+        const cloudState = await fetchCloudState();
+        if (!alive) return;
+        setState(cloudState);
+      } catch (e) {
+        if (!alive) return;
+        setCloudError(String(e?.message || e || "Failed to load from cloud."));
+      } finally {
+        if (!alive) return;
+        setCloudLoading(false);
+      }
+    }
+
+    load();
+
+    if (!supabase) return () => {
+      alive = false;
+    };
+
+    // Realtime: refetch on any change (simplest + reliable)
+    const channel = supabase
+      .channel("heron-ladder")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "players" },
+        () => load()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "matches" },
+        () => load()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "settings" },
+        () => load()
+      )
+      .subscribe();
+
+    return () => {
+      alive = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Default winner to the person being challenged
     setWinner("p2");
   }, [matchPos]);
 
-  // Keep match position within range when playerCount changes.
   useEffect(() => {
+    // Keep match position within range when playerCount changes
     const mp = clamp(asNumber(matchPos, 1), 1, playerCount);
     if (String(mp) !== matchPos) setMatchPos(String(mp));
   }, [playerCount, matchPos]);
@@ -505,7 +581,7 @@ export default function App() {
     setPinValue("");
     setPinError("");
     setPinOpen(true);
-    setTimeout(() => pinRef.current?.focus(), 0);
+    setTimeout(() => pinRef.current?.focus?.(), 0);
   }
 
   function closePin() {
@@ -514,34 +590,44 @@ export default function App() {
     setPinError("");
   }
 
-  function submitPin() {
-    if (pinValue !== ADMIN_PIN) {
-      setPinError("Incorrect PIN.");
+  async function submitPin() {
+    const pin = String(pinValue || "");
+    if (!pin) {
+      setPinError("Enter PIN.");
       return;
     }
 
-    closePin();
-
-    if (pinPurpose === "unlock") {
-      setLocked(false);
-      return;
-    }
-
-    if (pinPurpose === "add") {
-      if (pinPayload?.edit) {
-        applyEditWithPin();
+    try {
+      if (pinPurpose === "unlock") {
+        // unlock is client-only; write actions require pin again
+        setLocked(false);
+        closePin();
         return;
       }
-      actuallyAddMatch();
-      return;
-    }
 
-    if (pinPurpose === "delete") {
-      const matchId = pinPayload?.matchId;
-      if (matchId) {
+      if (pinPurpose === "add") {
+        closePin();
+        await actuallyAddMatch(pin);
+        return;
+      }
+
+      if (pinPurpose === "delete") {
+        const matchId = pinPayload?.matchId;
+        closePin();
         setDeleteTargetId(matchId);
         setDeleteConfirmOpen(true);
+        // we still need the pin when confirming, store it:
+        setPinPayload({ matchId, pin });
+        return;
       }
+
+      if (pinPurpose === "edit") {
+        closePin();
+        await actuallySaveEdit(pin);
+        return;
+      }
+    } catch (e) {
+      setPinError(String(e?.message || e || "PIN action failed"));
     }
   }
 
@@ -555,6 +641,9 @@ export default function App() {
         return { ...p, [field]: asNumber(value, 0) };
       }),
     }));
+
+    // NOTE: player edits are local until you add a backend “Save” workflow.
+    // For now, we keep match operations as the authoritative write path.
   }
 
   const visiblePlayers = useMemo(() => {
@@ -591,11 +680,11 @@ export default function App() {
       .sort((a, b) => a.position - b.position);
   }, [players, playerCount]);
 
-  // Live ranking: Top 3 by ladder order (no toggle)
   const leaderboardTop3 = useMemo(() => {
     const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
+    if (leaderboardMode === "stats") return [...named].sort(compareLeaderboard).slice(0, 3);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
-  }, [calculatedPlayers]);
+  }, [calculatedPlayers, leaderboardMode]);
 
   const matchesView = useMemo(() => {
     const byPid = new Map(players.map((p) => [p.pid, p]));
@@ -621,12 +710,7 @@ export default function App() {
 
         const winnerName = m.winnerId === "p1" ? p1Name : p2Name;
 
-        return {
-          ...m,
-          p1Name,
-          p2Name,
-          winnerName: winnerName || "(Unknown)",
-        };
+        return { ...m, p1Name, p2Name, winnerName: winnerName || "(Unknown)" };
       });
   }, [matches, players, playerCount]);
 
@@ -672,7 +756,7 @@ export default function App() {
     openPin("add");
   }
 
-  function actuallyAddMatch() {
+  async function actuallyAddMatch(pin) {
     setError("");
     if (locked) {
       setError("Locked: Admin unlock required.");
@@ -718,8 +802,8 @@ export default function App() {
       ladderMoveApplied: moved.applied,
     };
 
-    setState((prev) => {
-      const updatedPlayers = prev.players
+    const nextState = (() => {
+      const updatedPlayers = state.players
         .map((p) => {
           if (p.pid !== p1.pid && p.pid !== p2.pid) return p;
 
@@ -749,14 +833,22 @@ export default function App() {
         });
 
       return {
-        ...prev,
-        matches: [matchRecord, ...prev.matches],
+        ...state,
+        matches: [matchRecord, ...state.matches],
         players: updatedPlayers,
       };
-    });
+    })();
 
-    setMatchAddedOpen(true);
-    setScore("");
+    // Optimistic UI
+    setState(nextState);
+
+    try {
+      await saveCloudState(pin, nextState);
+      setMatchAddedOpen(true);
+      setScore("");
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to save to cloud."));
+    }
   }
 
   function requestDeleteMatch(id) {
@@ -764,9 +856,10 @@ export default function App() {
     openPin("delete", { matchId: id });
   }
 
-  function deleteMatchConfirmed() {
+  async function deleteMatchConfirmed() {
     const id = deleteTargetId;
-    if (!id) {
+    const pin = pinPayload?.pin;
+    if (!id || !pin) {
       setDeleteConfirmOpen(false);
       return;
     }
@@ -779,8 +872,8 @@ export default function App() {
 
     const parsed = parseScore(match.score);
 
-    setState((prev) => {
-      let nextPlayers = prev.players;
+    const nextState = (() => {
+      let nextPlayers = state.players;
 
       if (parsed.valid) {
         const validity = validateSets(parsed.sets);
@@ -818,47 +911,55 @@ export default function App() {
       }
 
       return {
-        ...prev,
-        matches: prev.matches.filter((m) => m.id !== id),
+        ...state,
+        matches: state.matches.filter((m) => m.id !== id),
         players: nextPlayers,
       };
-    });
+    })();
+
+    setState(nextState);
+
+    try {
+      await saveCloudState(pin, nextState);
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to delete in cloud."));
+    }
 
     setDeleteConfirmOpen(false);
     setDeleteTargetId(null);
+    setPinPayload(null);
   }
 
-  function openEditMatch(id) {
+  function openEditMatch(match) {
     if (locked) return;
-    const m = matchesView.find((x) => x.id === id);
-    if (!m) return;
-
-    setEditTargetId(id);
-    setEditDate(m.date || formatDateISO(new Date()));
-    setEditSurface(m.surface || SURFACES[2]);
-    setEditScore(m.score || "");
-    setEditWinner(m.winnerId || "p2");
     setEditError("");
+    setEditId(match.id);
+    setEditDate(match.date);
+    setEditSurface(match.surface || "Outdoor Hard Court");
+    setEditWinner(match.winnerId);
+    setEditScore(match.score);
     setEditOpen(true);
-  }
-
-  function closeEdit() {
-    setEditOpen(false);
-    setEditTargetId(null);
-    setEditError("");
   }
 
   function requestSaveEdit() {
     if (locked) return;
-    openPin("add", { edit: true });
+    setEditError("");
+    openPin("edit");
   }
 
-  function applyEditWithPin() {
-    const id = editTargetId;
-    if (!id) return;
+  async function actuallySaveEdit(pin) {
+    setEditError("");
+    const id = editId;
+    if (!id) {
+      setEditError("No match selected.");
+      return;
+    }
 
-    const match = matches.find((m) => m.id === id);
-    if (!match) return;
+    const original = state.matches.find((m) => m.id === id);
+    if (!original) {
+      setEditError("Match not found.");
+      return;
+    }
 
     // Validate new score
     const parsedNew = parseScore(editScore);
@@ -866,133 +967,133 @@ export default function App() {
       setEditError(parsedNew.message || "Score not recognised.");
       return;
     }
-    const validNew = validateSets(parsedNew.sets);
-    if (!validNew.ok) {
-      setEditError(validNew.message);
+    const vNew = validateSets(parsedNew.sets);
+    if (!vNew.ok) {
+      setEditError(vNew.message);
       return;
     }
 
-    // Validate old score so we can reverse safely
-    const parsedOld = parseScore(match.score);
-    if (!parsedOld.valid) {
-      setEditError("Original match score is invalid, cannot safely edit this match.");
-      return;
-    }
-    const validOld = validateSets(parsedOld.sets);
-    if (!validOld.ok) {
-      setEditError("Original match score is invalid, cannot safely edit this match.");
-      return;
-    }
+    // Build nextState by: delete original effects, then apply new effects.
+    const nextState = (() => {
+      // 1) start from current state
+      let s = { ...state, players: state.players.map((p) => ({ ...p })), matches: [...state.matches] };
 
-    const oldTotals = computeFromSets(parsedOld.sets);
-    const newTotals = computeFromSets(parsedNew.sets);
+      // helper to apply a match delta (+1 for add, -1 for remove)
+      const applyMatchDelta = (matchObj, dir) => {
+        const parsed = parseScore(matchObj.score);
+        if (!parsed.valid) throw new Error("Stored score invalid; can't edit safely.");
+        const valid = validateSets(parsed.sets);
+        if (!valid.ok) throw new Error("Stored score invalid; can't edit safely.");
 
-    const oldMonthKey = monthKeyFromDateISO(match.date);
-    const newMonthKey = monthKeyFromDateISO(editDate);
+        const { p1Sets, p2Sets, p1Games, p2Games } = computeFromSets(parsed.sets);
+        const monthKey = monthKeyFromDateISO(matchObj.date);
 
-    setState((prev) => {
-      // 1) reverse old stats
-      let nextPlayers = prev.players.map((p) => {
-        if (p.pid !== match.challengerPid && p.pid !== match.opponentPid) return p;
+        s.players = s.players.map((p) => {
+          if (p.pid !== matchObj.challengerPid && p.pid !== matchObj.opponentPid) return p;
 
-        const isP1 = p.pid === match.challengerPid;
-        const setsWonOld = isP1 ? oldTotals.p1Sets : oldTotals.p2Sets;
-        const setsLostOld = isP1 ? oldTotals.p2Sets : oldTotals.p1Sets;
-        const gamesWonOld = isP1 ? oldTotals.p1Games : oldTotals.p2Games;
-        const gamesLostOld = isP1 ? oldTotals.p2Games : oldTotals.p1Games;
-        const didWinOld = (match.winnerId === "p1" && isP1) || (match.winnerId === "p2" && !isP1);
+          const isP1 = p.pid === matchObj.challengerPid;
+          const setsWon = isP1 ? p1Sets : p2Sets;
+          const setsLost = isP1 ? p2Sets : p1Sets;
+          const gamesWon = isP1 ? p1Games : p2Games;
+          const gamesLost = isP1 ? p2Games : p1Games;
+          const didWin = (matchObj.winnerId === "p1" && isP1) || (matchObj.winnerId === "p2" && !isP1);
 
-        const out = {
-          ...p,
-          matchesPlayed: clampMin0((p.matchesPlayed || 0) - 1),
-          matchesWon: clampMin0((p.matchesWon || 0) - (didWinOld ? 1 : 0)),
-          setsWon: clampMin0((p.setsWon || 0) - setsWonOld),
-          setsLost: clampMin0((p.setsLost || 0) - setsLostOld),
-          gamesWon: clampMin0((p.gamesWon || 0) - gamesWonOld),
-          gamesLost: clampMin0((p.gamesLost || 0) - gamesLostOld),
-        };
-        if (oldMonthKey) out[oldMonthKey] = clampMin0((p[oldMonthKey] || 0) - 1);
-        return out;
-      });
+          const out = {
+            ...p,
+            matchesPlayed: clampMin0((p.matchesPlayed || 0) + 1 * dir),
+            matchesWon: clampMin0((p.matchesWon || 0) + (didWin ? 1 : 0) * dir),
+            setsWon: clampMin0((p.setsWon || 0) + setsWon * dir),
+            setsLost: clampMin0((p.setsLost || 0) + setsLost * dir),
+            gamesWon: clampMin0((p.gamesWon || 0) + gamesWon * dir),
+            gamesLost: clampMin0((p.gamesLost || 0) + gamesLost * dir),
+          };
+          if (monthKey) out[monthKey] = clampMin0((p[monthKey] || 0) + 1 * dir);
+          return out;
+        });
+      };
 
-      // 2) reverse ladder move if applied
-      if (match.ladderMoveApplied) {
-        nextPlayers = reverseLadderMove(nextPlayers, match.challengerPid, match.challengerStartPos, match.opponentStartPos);
+      // 2) reverse ladder move if applied (for original)
+      if (original.ladderMoveApplied) {
+        s.players = reverseLadderMove(s.players, original.challengerPid, original.challengerStartPos, original.opponentStartPos);
       }
 
-      // 3) apply new stats
-      nextPlayers = nextPlayers.map((p) => {
-        if (p.pid !== match.challengerPid && p.pid !== match.opponentPid) return p;
+      // 3) subtract original stats
+      applyMatchDelta(original, -1);
 
-        const isP1 = p.pid === match.challengerPid;
-        const setsWonNew = isP1 ? newTotals.p1Sets : newTotals.p2Sets;
-        const setsLostNew = isP1 ? newTotals.p2Sets : newTotals.p1Sets;
-        const gamesWonNew = isP1 ? newTotals.p1Games : newTotals.p2Games;
-        const gamesLostNew = isP1 ? newTotals.p2Games : newTotals.p1Games;
-        const didWinNew = (editWinner === "p1" && isP1) || (editWinner === "p2" && !isP1);
+      // 4) create edited match object (preserve start positions, but playedFor uses opponentStartPos)
+      const edited = {
+        ...original,
+        date: editDate,
+        surface: editSurface,
+        winnerId: editWinner,
+        score: String(editScore || "").trim(),
+      };
 
-        const next = {
-          ...p,
-          matchesPlayed: (p.matchesPlayed || 0) + 1,
-          matchesWon: (p.matchesWon || 0) + (didWinNew ? 1 : 0),
-          setsWon: (p.setsWon || 0) + setsWonNew,
-          setsLost: (p.setsLost || 0) + setsLostNew,
-          gamesWon: (p.gamesWon || 0) + gamesWonNew,
-          gamesLost: (p.gamesLost || 0) + gamesLostNew,
-        };
-        if (newMonthKey) next[newMonthKey] = (p[newMonthKey] || 0) + 1;
-        return next;
+      // 5) Determine if ladder move should apply now
+      const p1 = s.players.find((p) => p.pid === edited.challengerPid);
+      const p2 = s.players.find((p) => p.pid === edited.opponentPid);
+      if (!p1 || !p2) throw new Error("Players missing.");
+
+      const challengerStartPos = p1.position;
+      const opponentStartPos = p2.position;
+      const shouldMove = edited.winnerId === "p1" && challengerStartPos > opponentStartPos;
+      const moved = shouldMove ? applyLadderMove(s.players, p1.pid, opponentStartPos) : { players: s.players, applied: false };
+
+      edited.challengerStartPos = challengerStartPos;
+      edited.opponentStartPos = opponentStartPos;
+      edited.positionPlayedFor = opponentStartPos;
+      edited.ladderMoveApplied = moved.applied;
+
+      // 6) apply ladder move positions
+      s.players = s.players.map((p) => {
+        const after = moved.players.find((x) => x.pid === p.pid);
+        return after ? { ...p, position: after.position } : p;
       });
 
-      // 4) apply ladder move if the new result triggers it
-      const challengerPlayer = nextPlayers.find((p) => p.pid === match.challengerPid);
-      const opponentPlayer = nextPlayers.find((p) => p.pid === match.opponentPid);
+      // 7) add edited stats
+      applyMatchDelta(edited, +1);
 
-      let ladderApplied = false;
-      let movedPlayers = nextPlayers;
-      if (challengerPlayer && opponentPlayer) {
-        const shouldMoveNew = editWinner === "p1" && challengerPlayer.position > opponentPlayer.position;
-        if (shouldMoveNew) {
-          const moved = applyLadderMove(movedPlayers, challengerPlayer.pid, opponentPlayer.position);
-          movedPlayers = moved.players;
-          ladderApplied = moved.applied;
-        }
-      }
+      // 8) update match list
+      s.matches = s.matches.map((m) => (m.id === edited.id ? edited : m));
 
-      // 5) update match record
-      const updatedMatches = prev.matches.map((m) => {
-        if (m.id !== id) return m;
-        return {
-          ...m,
-          date: editDate,
-          surface: editSurface,
-          score: String(editScore || "").trim(),
-          winnerId: editWinner,
-          ladderMoveApplied: ladderApplied,
-        };
-      });
+      return s;
+    })();
 
-      return { ...prev, players: movedPlayers, matches: updatedMatches };
-    });
+    setState(nextState);
 
-    closeEdit();
+    try {
+      await saveCloudState(pin, nextState);
+      setEditOpen(false);
+      setEditId(null);
+    } catch (e) {
+      setEditError(String(e?.message || e || "Failed to save edit to cloud."));
+    }
   }
 
   const pinTitle =
     pinPurpose === "unlock"
       ? "Admin unlock"
       : pinPurpose === "add"
-      ? pinPayload?.edit
-        ? "Admin PIN required to save edits"
-        : "Admin PIN required to add match"
-      : "Admin PIN required to delete match";
+      ? "Admin PIN required to add match"
+      : pinPurpose === "delete"
+      ? "Admin PIN required to delete match"
+      : "Admin PIN required to save edit";
 
   const pinHint =
     pinPurpose === "unlock"
-      ? "Unlock editing for this session."
+      ? "Unlock editing for this session (viewers remain read-only)."
       : pinPurpose === "add"
-      ? "PIN required right before saving."
-      : "PIN required before requesting a delete.";
+      ? "PIN required right before saving this match."
+      : pinPurpose === "delete"
+      ? "PIN required before deleting a match."
+      : "PIN required to save an edit.";
+
+  const opponentLabel = useMemo(() => {
+    const pos = clamp(asNumber(matchPos, 1), 1, playerCount);
+    const p = players.find((x) => x.position === pos);
+    const nm = p?.name?.trim();
+    return nm ? `#${pos} (${nm})` : `#${pos}`;
+  }, [matchPos, playerCount, players]);
 
   return (
     <div className="app">
@@ -1028,7 +1129,6 @@ export default function App() {
           const pid = playerModalPid;
           if (!pid) return <div className="hint">No player selected.</div>;
 
-          // Most recent first:
           const list = matchesView
             .filter((m) => m.challengerPid === pid || m.opponentPid === pid)
             .sort((a, b) => {
@@ -1089,6 +1189,66 @@ export default function App() {
         <div>Saved successfully.</div>
       </Modal>
 
+      {/* Edit match */}
+      <Modal
+        open={editOpen}
+        title="Edit match"
+        onClose={() => {
+          setEditOpen(false);
+          setEditId(null);
+          setEditError("");
+        }}
+        actions={
+          <>
+            <button
+              className="btnGhost"
+              onClick={() => {
+                setEditOpen(false);
+                setEditId(null);
+                setEditError("");
+              }}
+            >
+              Cancel
+            </button>
+            <button className="btn" onClick={requestSaveEdit}>
+              Save
+            </button>
+          </>
+        }
+      >
+        {editError ? <div className="errorBox">{editError}</div> : null}
+        <div className="formGrid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginTop: 2 }}>
+          <div>
+            <div className="label">Date</div>
+            <input className="textInput" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
+          </div>
+          <div>
+            <div className="label">Surface</div>
+            <select className="textInput" value={editSurface} onChange={(e) => setEditSurface(e.target.value)}>
+              {SURFACES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="label">Winner</div>
+            <select className="textInput" value={editWinner} onChange={(e) => setEditWinner(e.target.value)}>
+              <option value="p1">Challenger</option>
+              <option value="p2">Opponent</option>
+            </select>
+          </div>
+          <div>
+            <div className="label">Score (Challenger perspective)</div>
+            <input className="textInput" value={editScore} onChange={(e) => setEditScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" />
+          </div>
+        </div>
+        <div className="hint" style={{ marginTop: 10 }}>
+          Saving an edit will recalculate stats and ladder moves.
+        </div>
+      </Modal>
+
       {/* PIN modal */}
       <Modal
         open={pinOpen}
@@ -1140,61 +1300,6 @@ export default function App() {
         <div className="hint">This removes the match and reverses its stats/ladder movement.</div>
       </Modal>
 
-      {/* Edit match */}
-      <Modal
-        open={editOpen}
-        title="Edit match"
-        onClose={closeEdit}
-        actions={
-          <>
-            <button className="btnGhost" onClick={closeEdit}>
-              Cancel
-            </button>
-            <button className="btn" onClick={requestSaveEdit}>
-              Save changes
-            </button>
-          </>
-        }
-      >
-        {editError ? <div className="errorBox">{editError}</div> : null}
-
-        <div className="label">Date</div>
-        <input className="textInput" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
-
-        <div style={{ height: 10 }} />
-
-        <div className="label">Surface</div>
-        <select className="textInput" value={editSurface} onChange={(e) => setEditSurface(e.target.value)}>
-          {SURFACES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-
-        <div style={{ height: 10 }} />
-
-        <div className="label">Winner</div>
-        <select className="textInput" value={editWinner} onChange={(e) => setEditWinner(e.target.value)}>
-          {(() => {
-            const m = matchesView.find((x) => x.id === editTargetId);
-            if (!m) return null;
-            return (
-              <>
-                <option value="p1">{m.p1Name}</option>
-                <option value="p2">{m.p2Name}</option>
-              </>
-            );
-          })()}
-        </select>
-
-        <div style={{ height: 10 }} />
-
-        <div className="label">Score</div>
-        <input className="textInput" value={editScore} onChange={(e) => setEditScore(e.target.value)} />
-        <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
-      </Modal>
-
       <div className="container">
         {/* Title + actions */}
         <div className="card" style={{ marginBottom: 14 }}>
@@ -1202,8 +1307,11 @@ export default function App() {
             <div>
               <div className="title">Heron Tennis Summer Ladder 2026</div>
               <div className="subtitle">
-                {playerCount} players • click headers to sort (display-only). Ladder positions update via match results.
+                {playerCount} players • click headers to sort (display-only). Cloud synced.
+                {cloudLoading ? " • Loading…" : ""}
               </div>
+              {cloudError ? <div className="error">Cloud error: {cloudError}</div> : null}
+              {!supabase ? <div className="error">Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY</div> : null}
             </div>
             <div className="actions">
               {locked ? (
@@ -1339,7 +1447,7 @@ export default function App() {
           <div className="cardHeader">
             <div>
               <div className="cardTitle">Add Match</div>
-              <div className="hint">Add/Delete/Edit always require PIN (2017). Default winner is the challenged player.</div>
+              <div className="hint">Add/Delete/Edit require PIN. Viewers can see updates in realtime.</div>
             </div>
           </div>
           <div className="cardBody">
@@ -1356,8 +1464,8 @@ export default function App() {
                 <select className="textInput" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
                   {Array.from({ length: playerCount }, (_, i) => {
                     const pos = i + 1;
-                    const pp = players.find((x) => x.position === pos);
-                    const nm = pp?.name?.trim();
+                    const p = players.find((x) => x.position === pos);
+                    const nm = p?.name?.trim();
                     return (
                       <option key={pos} value={String(pos)}>
                         #{pos}{nm ? ` (${nm})` : ""}
@@ -1365,7 +1473,7 @@ export default function App() {
                     );
                   })}
                 </select>
-                <div className="hint">Opponent: {opponent?.name?.trim() ? opponent.name : "(no name yet)"}</div>
+                <div className="hint">Selected: {opponentLabel}</div>
               </div>
 
               <div>
@@ -1403,14 +1511,19 @@ export default function App() {
 
             <div style={{ marginTop: 12 }}>
               <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-              <input className="textInput" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
+              <input
+                className="textInput"
+                value={score}
+                onChange={(e) => setScore(e.target.value)}
+                placeholder="e.g. 6-4 3-6 10-8"
+                disabled={locked}
+              />
               <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
 
-              <div style={{ marginTop: 10 }}>
-                <button className="btn" onClick={requestAddMatch} disabled={locked}>
-                  Add match
-                </button>
-              </div>
+              {/* Button BELOW score input (per request) */}
+              <button className="btn" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>
+                Add match
+              </button>
             </div>
 
             {locked ? <div className="hint" style={{ marginTop: 10 }}>Locked: nothing is editable. Admin unlock to enter results.</div> : null}
@@ -1446,8 +1559,8 @@ export default function App() {
                         <td>{m.winnerName}</td>
                         <td className="mono">{m.score}</td>
                         <td style={{ textAlign: "right" }}>
-                          <div style={{ display: "inline-flex", gap: 8 }}>
-                            <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m.id)}>
+                          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+                            <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>
                               Edit
                             </button>
                             <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>
@@ -1465,37 +1578,32 @@ export default function App() {
             <div className="sep" />
 
             <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
-            <div>
-              <div style={{ maxWidth: 260 }}>
-                <div className="label">How many players are in the ladder?</div>
-                <input
-                  className="textInput"
-                  type="number"
-                  min={2}
-                  max={CAPACITY}
-                  value={playerCount}
-                  disabled={locked}
-                  onChange={(e) => {
-                    const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY);
-                    setState((prev) => ({ ...prev, playerCount: next }));
-                  }}
-                />
-                <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
-              </div>
-            </div>
-            <div className="hint">
-              This only changes how many rows/positions are in-use. It doesn’t delete stored players beyond that — if you bump the count back
-              up later, they come back.
+            <div style={{ maxWidth: 320 }}>
+              <div className="label">How many players are in the ladder?</div>
+              <input
+                className="textInput"
+                type="number"
+                min={2}
+                max={CAPACITY}
+                value={playerCount}
+                disabled={locked}
+                onChange={(e) => {
+                  const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY);
+                  setState((prev) => ({ ...prev, playerCount: next }));
+                }}
+              />
+              <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
+              <div className="hint">Note: Player count changes are local until you add a “Save settings” admin action.</div>
             </div>
           </div>
         </div>
 
         <div className="hint" style={{ textAlign: "center", margin: "16px 0 30px" }}>
-          Data saves automatically in this browser (localStorage). If you deploy it, each device has its own storage unless you add a backend.
+          Shared cloud storage via Supabase. Everyone sees the same ladder.
         </div>
       </div>
 
-     {false && <SelfTests />}
+      <SelfTests />
     </div>
   );
 }
@@ -1547,9 +1655,9 @@ const css = `
 
   .cardBody { padding: 14px; }
 
-  .title { font-size: 20px; font-weight: 750; }
+  .title { font-size: 20px; font-weight: 800; }
   .subtitle { margin-top: 4px; font-size: 12px; color: var(--muted); }
-  .cardTitle { font-size: 14px; font-weight: 750; }
+  .cardTitle { font-size: 14px; font-weight: 800; }
 
   .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -1559,7 +1667,7 @@ const css = `
     padding: 9px 12px;
     color: var(--text);
     cursor: pointer;
-    font-weight: 650;
+    font-weight: 700;
     font-size: 13px;
     background: var(--btn);
   }
@@ -1594,11 +1702,10 @@ const css = `
 
   th, td { padding: 10px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: middle; }
 
-  /* Column titles: +1pt and bold */
   th {
     text-align: left;
     font-size: 13px;
-    font-weight: 800;
+    font-weight: 900;
     color: var(--muted);
     position: sticky;
     top: 0;
@@ -1609,7 +1716,7 @@ const css = `
     background: transparent;
     border: 0;
     color: inherit;
-    font-weight: 800;
+    font-weight: 900;
     cursor: pointer;
     padding: 0;
   }
@@ -1627,7 +1734,7 @@ const css = `
     border: 1px solid rgba(255,255,255,0.10);
     background: rgba(255,255,255,0.03);
     color: var(--text);
-    font-weight: 750;
+    font-weight: 800;
     cursor: pointer;
     text-align: left;
   }
@@ -1655,7 +1762,7 @@ const css = `
   select.textInput option { background: #ffffff; color: #000000; }
 
   .numInput {
-    width: 64px;
+    width: 76px;
     padding: 7px 8px;
     border-radius: 12px;
     border: 1px solid var(--border);
@@ -1666,7 +1773,7 @@ const css = `
   }
 
   .numText {
-    width: 64px;
+    width: 76px;
     text-align: right;
     font-variant-numeric: tabular-nums;
     color: var(--muted);
@@ -1685,7 +1792,9 @@ const css = `
     .formGrid { grid-template-columns: repeat(5, 1fr); }
   }
 
-  .label { font-size: 12px; color: var(--muted); font-weight: 750; margin-bottom: 6px; }
+  .label { font-size: 12px; color: var(--muted); font-weight: 800; margin-bottom: 6px; }
+
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 
   /* Live ranking layout */
   .liveHeader {
@@ -1715,8 +1824,6 @@ const css = `
     padding: 12px;
     background: rgba(255,255,255,0.04);
     min-height: 92px;
-    /* rounder + more legible */
-    font-family: ui-rounded, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   }
 
   .leaderCard.empty {
@@ -1728,7 +1835,22 @@ const css = `
 
   .leaderMedal { font-size: 18px; }
   .leaderName { font-weight: 900; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .leaderStats { font-size: 14px; font-weight: 850; color: rgba(255,255,255,0.92); margin-top: 8px; }
+
+  /* Make stats under live ranking clearer + rounder */
+  .leaderSub {
+    font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    font-weight: 800;
+    color: rgba(255,255,255,0.78);
+    font-size: 12.5px;
+  }
+
+  .leaderStats {
+    font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    font-size: 12.5px;
+    font-weight: 800;
+    color: rgba(255,255,255,0.80);
+    margin-top: 8px;
+  }
 
   .playerMatchList { display: flex; flex-direction: column; gap: 10px; }
   .playerMatchRow {
@@ -1764,7 +1886,7 @@ const css = `
     z-index: 50;
   }
   .modalCard {
-    width: min(520px, 100%);
+    width: min(560px, 100%);
     background: rgba(18, 24, 48, 0.98);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 16px;
