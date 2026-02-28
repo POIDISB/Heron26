@@ -1760,15 +1760,18 @@ const css = `
     align-items: center;
     justify-content: flex-start;
     width: 100%;
-    padding: 8px 10px;
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,0.10);
-    background: rgba(255,255,255,0.03);
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
     color: var(--text);
-    font-weight: 800;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.01em;
     cursor: pointer;
     text-align: left;
   }
+  .nameBtn:hover { border-color: rgba(255,255,255,0.18); }
   .nameBtn:hover { border-color: rgba(255,255,255,0.22); }
 
   .textInput {
@@ -1865,7 +1868,15 @@ const css = `
   }
 
   .leaderMedal { font-size: 18px; }
-  .leaderName { font-weight: 900; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leaderName {
+    font-weight: 600;
+    font-size: 14px;
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.01em;
+  }
 
   /* Make stats under live ranking clearer + rounder */
   .leaderSub {
@@ -1876,10 +1887,9 @@ const css = `
   }
 
   .leaderStats {
-    font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    font-size: 12.5px;
-    font-weight: 800;
-    color: rgba(255,255,255,0.80);
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.85);
     margin-top: 8px;
   }
 
