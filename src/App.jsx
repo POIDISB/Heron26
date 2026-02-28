@@ -466,6 +466,7 @@ export default function App() {
   // Cloud status
   const [cloudError, setCloudError] = useState("");
   const [cloudLoading, setCloudLoading] = useState(true);
+  const [dirty, setDirty] = useState(false); // local edits not yet pushed to cloud
 
   // Locking
   const [locked, setLocked] = useState(true);
@@ -508,7 +509,7 @@ export default function App() {
   const [pinOpen, setPinOpen] = useState(false);
   const [pinValue, setPinValue] = useState("");
   const [pinError, setPinError] = useState("");
-  const [pinPurpose, setPinPurpose] = useState("unlock"); // unlock | add | delete | edit
+  const [pinPurpose, setPinPurpose] = useState("unlock"); // unlock | add | delete | edit | save
   const [pinPayload, setPinPayload] = useState(null);
   const pinRef = useRef(null);
 
@@ -523,6 +524,7 @@ export default function App() {
         const cloudState = await fetchCloudState();
         if (!alive) return;
         setState(cloudState);
+        setDirty(false);
       } catch (e) {
         if (!alive) return;
         setCloudError(String(e?.message || e || "Failed to load from cloud."));
@@ -626,6 +628,12 @@ export default function App() {
         await actuallySaveEdit(pin);
         return;
       }
+
+      if (pinPurpose === "save") {
+        closePin();
+        await actuallySaveAll(pin);
+        return;
+      }
     } catch (e) {
       setPinError(String(e?.message || e || "PIN action failed"));
     }
@@ -633,6 +641,7 @@ export default function App() {
 
   function updatePlayer(pid, field, value) {
     if (locked) return;
+    setDirty(true);
     setState((prev) => ({
       ...prev,
       players: prev.players.map((p) => {
@@ -641,9 +650,6 @@ export default function App() {
         return { ...p, [field]: asNumber(value, 0) };
       }),
     }));
-
-    // NOTE: player edits are local until you add a backend “Save” workflow.
-    // For now, we keep match operations as the authoritative write path.
   }
 
   const visiblePlayers = useMemo(() => {
@@ -1070,6 +1076,17 @@ export default function App() {
     }
   }
 
+
+  async function actuallySaveAll(pin) {
+    setError("");
+    try {
+      await saveCloudState(pin, state);
+      setDirty(false);
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to save to cloud."));
+    }
+  }
+
   const pinTitle =
     pinPurpose === "unlock"
       ? "Admin unlock"
@@ -1077,7 +1094,9 @@ export default function App() {
       ? "Admin PIN required to add match"
       : pinPurpose === "delete"
       ? "Admin PIN required to delete match"
-      : "Admin PIN required to save edit";
+      : pinPurpose === "edit"
+      ? "Admin PIN required to save edit"
+      : "Admin PIN required to save changes";
 
   const pinHint =
     pinPurpose === "unlock"
@@ -1086,7 +1105,9 @@ export default function App() {
       ? "PIN required right before saving this match."
       : pinPurpose === "delete"
       ? "PIN required before deleting a match."
-      : "PIN required to save an edit.";
+      : pinPurpose === "edit"
+      ? "PIN required to save an edit."
+      : "PIN required to push your changes to the cloud.";
 
   const opponentLabel = useMemo(() => {
     const pos = clamp(asNumber(matchPos, 1), 1, playerCount);
@@ -1331,6 +1352,15 @@ export default function App() {
                 }}
               >
                 Reset sort
+              </button>
+
+              <button
+                className={dirty && !locked ? "btn" : "btnGhost"}
+                disabled={locked || !dirty}
+                onClick={() => openPin("save")}
+                title={locked ? "Unlock to save changes" : dirty ? "Save your edits to the shared ladder" : "No unsaved changes"}
+              >
+                Save changes
               </button>
             </div>
           </div>
@@ -1589,6 +1619,7 @@ export default function App() {
                 disabled={locked}
                 onChange={(e) => {
                   const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY);
+                  setDirty(true);
                   setState((prev) => ({ ...prev, playerCount: next }));
                 }}
               />
