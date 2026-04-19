@@ -10,6 +10,7 @@ import { createClient } from "@supabase/supabase-js";
  * - Each ladder has fully separate players, matches, and playerCount
  * - Shared cloud sync via Supabase
  * - Admin writes go through /api/admin with PIN
+ * - Mobile-friendly browser layout while keeping desktop layout intact
  */
 
 const DEFAULT_PLAYER_COUNT = 40;
@@ -278,11 +279,11 @@ function ladderRowStyle(position) {
   return undefined;
 }
 
-function Modal({ open, title, children, actions, onClose }) {
+function Modal({ open, title, children, actions, onClose, mobileFull = false }) {
   if (!open) return null;
   return (
     <div className="modalOverlay" role="dialog" aria-modal="true">
-      <div className="modalCard">
+      <div className={mobileFull ? "modalCard mobileFull" : "modalCard"}>
         <div className="modalHeader">
           <div className="modalTitle">{title}</div>
           <button className="iconBtn" onClick={onClose} aria-label="Close">
@@ -312,10 +313,35 @@ function LeaderCard({ medal, p }) {
       <div className="leaderSub" style={{ marginTop: 4 }}>
         Pos #{p.position}
       </div>
-      <div className="leaderStats mono">
+      <div className="leaderStats">
         <div>W: {p.matchesWon}</div>
         <div>
           SD: {p.setDiff} • GD: {p.gameDiff}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileSummary({ divisionLabel, playerCount, totalMatches, top3 }) {
+  return (
+    <div className="mobileSummary">
+      <div className="summaryPill">
+        <div className="summaryLabel">Ladder</div>
+        <div className="summaryValue">{divisionLabel}</div>
+      </div>
+      <div className="summaryPill">
+        <div className="summaryLabel">Players</div>
+        <div className="summaryValue">{playerCount}</div>
+      </div>
+      <div className="summaryPill">
+        <div className="summaryLabel">Matches</div>
+        <div className="summaryValue">{totalMatches}</div>
+      </div>
+      <div className="summaryPill wide">
+        <div className="summaryLabel">Top 3</div>
+        <div className="summaryValue small">
+          {top3.length === 0 ? "—" : top3.map((p, i) => `${i + 1}. ${p.name || "—"}`).join(" • ")}
         </div>
       </div>
     </div>
@@ -417,6 +443,8 @@ async function saveCloudState(pin, fullState) {
 export default function App() {
   const [state, setState] = useState(() => defaultState());
   const [activeDivision, setActiveDivision] = useState("mens");
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
 
   const current = state[activeDivision];
   const { players, matches, playerCount } = current;
@@ -458,6 +486,11 @@ export default function App() {
   const [pinPurpose, setPinPurpose] = useState("unlock");
   const [pinPayload, setPinPayload] = useState(null);
   const pinRef = useRef(null);
+
+  const liveRef = useRef(null);
+  const ladderRef = useRef(null);
+  const addMatchRef = useRef(null);
+  const historyRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -510,6 +543,10 @@ export default function App() {
     const mp = clamp(asNumber(matchPos, 1), 1, playerCount);
     if (String(mp) !== matchPos) setMatchPos(String(mp));
   }, [playerCount, matchPos]);
+
+  function scrollToRef(ref) {
+    ref?.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   function patchCurrentDivision(patchFn) {
     setState((prev) => ({
@@ -807,7 +844,6 @@ export default function App() {
     }
 
     const parsed = parseScore(match.score);
-
     let nextPlayers = current.players;
 
     if (parsed.valid) {
@@ -1024,12 +1060,15 @@ export default function App() {
     return nm ? `#${pos} (${nm})` : `#${pos}`;
   }, [matchPos, playerCount, players]);
 
+  const divisionLabel = activeDivision === "mens" ? "Men's" : "Women's";
+
   return (
     <div className="app">
       <style>{css}</style>
 
       <Modal
         open={playerModalOpen}
+        mobileFull={true}
         title={(() => {
           const p = players.find((x) => x.pid === playerModalPid);
           if (!p) return "Player results";
@@ -1062,18 +1101,18 @@ export default function App() {
           const pname = pObj && (pObj.position < 1 || pObj.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
 
           return (
-            <div className="playerMatchList">
+            <div className="playerMatchList mobileSpacious">
               {list.map((m) => {
                 const isChallenger = m.challengerPid === pid;
                 const opponentName = isChallenger ? m.p2Name : m.p1Name;
                 const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
                 return (
-                  <div key={m.id} className="playerMatchRow">
+                  <div key={m.id} className="playerMatchRow roomy">
                     <div className="playerMatchTop">
                       <div className="mono">{m.date}</div>
                       <div className={didWin ? "pillWin" : "pillLoss"}>{didWin ? "WIN" : "LOSS"}</div>
                     </div>
-                    <div className="playerMatchMid">
+                    <div className="playerMatchMid stackedMobile">
                       <div>
                         <div className="playerMatchTitle">{pname} vs {opponentName}</div>
                         <div className="hint">
@@ -1095,9 +1134,9 @@ export default function App() {
         <div>Saved successfully.</div>
       </Modal>
 
-      <Modal open={editOpen} title="Edit match" onClose={() => { setEditOpen(false); setEditId(null); setEditError(""); }} actions={<><button className="btnGhost" onClick={() => { setEditOpen(false); setEditId(null); setEditError(""); }}>Cancel</button><button className="btn" onClick={requestSaveEdit}>Save</button></>}>
+      <Modal open={editOpen} mobileFull={true} title="Edit match" onClose={() => { setEditOpen(false); setEditId(null); setEditError(""); }} actions={<><button className="btnGhost" onClick={() => { setEditOpen(false); setEditId(null); setEditError(""); }}>Cancel</button><button className="btn" onClick={requestSaveEdit}>Save</button></>}>
         {editError ? <div className="errorBox">{editError}</div> : null}
-        <div className="formGrid" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginTop: 2 }}>
+        <div className="formGrid mobileSingle" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginTop: 2 }}>
           <div>
             <div className="label">Date</div>
             <input className="textInput" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
@@ -1135,19 +1174,19 @@ export default function App() {
       </Modal>
 
       <div className="container">
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div className="cardHeader">
+        <div className="card stickyControlsCard" style={{ marginBottom: 14 }}>
+          <div className="cardHeader mobileStickyHeader">
             <div>
               <div className="title">Heron Tennis Summer Ladder 2026</div>
               <div className="subtitle">
-                {activeDivision === "mens" ? "Men's" : "Women's"} ladder • {playerCount} players • Cloud synced.
+                {divisionLabel} ladder • {playerCount} players • Cloud synced.
                 {cloudLoading ? " • Loading…" : ""}
               </div>
               {cloudError ? <div className="error">Cloud error: {cloudError}</div> : null}
               {!supabase ? <div className="error">Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY</div> : null}
             </div>
-            <div className="actions">
-              <div className="segControl">
+            <div className="actions mobileActions">
+              <div className="segControl fullOnMobile">
                 {DIVISIONS.map((d) => (
                   <button key={d.key} className={activeDivision === d.key ? "segBtn active" : "segBtn"} onClick={() => setActiveDivision(d.key)}>
                     {d.label}
@@ -1162,21 +1201,32 @@ export default function App() {
             </div>
           </div>
 
-          <div className="cardBody" style={{ paddingTop: 12 }}>
+          <div className="mobileOnly cardBody mobileToolbarWrap">
+            <div className="quickNav">
+              <button className="quickNavBtn" onClick={() => scrollToRef(liveRef)}>Live ranking</button>
+              <button className="quickNavBtn" onClick={() => scrollToRef(ladderRef)}>Ladder</button>
+              <button className="quickNavBtn" onClick={() => scrollToRef(addMatchRef)}>Add match</button>
+              <button className="quickNavBtn" onClick={() => scrollToRef(historyRef)}>Match history</button>
+            </div>
+            <MobileSummary divisionLabel={divisionLabel} playerCount={playerCount} totalMatches={matches.length} top3={leaderboardTop3} />
+          </div>
+
+          <div className="cardBody" style={{ paddingTop: 12 }} ref={liveRef}>
             <div className="liveHeader">
               <div>
                 <div className="cardTitle">Live ranking</div>
-                <div className="hint">Top 3 • {activeDivision === "mens" ? "Men's" : "Women's"}</div>
+                <div className="hint">Top 3 • {divisionLabel}</div>
               </div>
             </div>
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid"><LeaderCard medal="🥇" p={leaderboardTop3[0]} /><LeaderCard medal="🥈" p={leaderboardTop3[1]} /><LeaderCard medal="🥉" p={leaderboardTop3[2]} /></div>}
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" ref={ladderRef}>
           <div className="cardHeader"><div><div className="hint">Locked = nothing editable.</div></div></div>
           <div className="cardBody">
-            <div className="tableWrap">
+            <div className="mobileOnly swipeHint">Swipe sideways to view all stats →</div>
+            <div className="tableWrap mobileTableWrap">
               <table className="table ladderTable">
                 <thead>
                   <tr>
@@ -1215,18 +1265,18 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="cardHeader"><div><div className="cardTitle">Add Match</div><div className="hint">{activeDivision === "mens" ? "Men's" : "Women's"} ladder • Add/Delete/Edit require PIN.</div></div></div>
+        <div className="card" style={{ marginTop: 14 }} ref={addMatchRef}>
+          <div className="cardHeader"><div><div className="cardTitle">Add Match</div><div className="hint">{divisionLabel} ladder • Add/Delete/Edit require PIN.</div></div></div>
           <div className="cardBody">
             {error ? <div className="errorBox">{error}</div> : null}
-            <div className="formGrid">
+            <div className="formGrid mobileStackFriendly">
               <div>
                 <div className="label">Date</div>
-                <input className="textInput" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
+                <input className="textInput tallOnMobile" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
               </div>
               <div>
                 <div className="label">Position being played for</div>
-                <select className="textInput" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
+                <select className="textInput tallOnMobile" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
                   {Array.from({ length: playerCount }, (_, i) => {
                     const pos = i + 1;
                     const p = players.find((x) => x.position === pos);
@@ -1238,7 +1288,7 @@ export default function App() {
               </div>
               <div>
                 <div className="label">Challenger</div>
-                <select className="textInput" value={challengerPid} onChange={(e) => setChallengerPid(e.target.value)} disabled={locked}>
+                <select className="textInput tallOnMobile" value={challengerPid} onChange={(e) => setChallengerPid(e.target.value)} disabled={locked}>
                   <option value="">Select…</option>
                   {selectablePlayers.map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
                 </select>
@@ -1246,13 +1296,13 @@ export default function App() {
               </div>
               <div>
                 <div className="label">Surface</div>
-                <select className="textInput" value={surface} onChange={(e) => setSurface(e.target.value)} disabled={locked}>
+                <select className="textInput tallOnMobile" value={surface} onChange={(e) => setSurface(e.target.value)} disabled={locked}>
                   {SURFACES.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
                 <div className="label">Winner</div>
-                <select className="textInput" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
+                <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
                   <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
                   <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
                 </select>
@@ -1261,57 +1311,77 @@ export default function App() {
 
             <div style={{ marginTop: 12 }}>
               <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-              <input className="textInput" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
+              <input className="textInput tallOnMobile" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
               <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
-              <button className="btn" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>Add match</button>
+              <button className="btn fullWidthOnMobile" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>Add match</button>
             </div>
 
             {locked ? <div className="hint" style={{ marginTop: 10 }}>Locked: nothing is editable. Admin unlock to enter results.</div> : null}
 
             <div className="sep" />
-            <div className="cardTitle" style={{ marginBottom: 8 }}>Completed matches</div>
-            {matchesView.length === 0 ? <div className="hint">No matches logged yet.</div> : (
-              <div className="tableWrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th><th style={{ textAlign: "right" }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {matchesView.map((m) => (
-                      <tr key={m.id}>
-                        <td className="mono">{m.date}</td>
-                        <td>#{m.positionPlayedFor}</td>
-                        <td>{m.p1Name}</td>
-                        <td>{m.p2Name}</td>
-                        <td>{m.surface || "—"}</td>
-                        <td>{m.winnerName}</td>
-                        <td className="mono">{m.score}</td>
-                        <td style={{ textAlign: "right" }}>
-                          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-                            <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>Edit</button>
-                            <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>Delete</button>
-                          </div>
-                        </td>
+            <div className="cardTitle" style={{ marginBottom: 8 }} ref={historyRef}>Completed matches</div>
+            <div className="mobileOnly collapsibleWrap">
+              <button className="collapseBtn" onClick={() => setMobileHistoryOpen((v) => !v)}>
+                {mobileHistoryOpen ? "Hide match history" : "Show match history"}
+              </button>
+            </div>
+            <div className={mobileHistoryOpen ? "sectionOpen" : "sectionClosedMobileOnly"}>
+              {matchesView.length === 0 ? <div className="hint">No matches logged yet.</div> : (
+                <div className="tableWrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th><th style={{ textAlign: "right" }}>Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    </thead>
+                    <tbody>
+                      {matchesView.map((m) => (
+                        <tr key={m.id}>
+                          <td className="mono">{m.date}</td>
+                          <td>#{m.positionPlayedFor}</td>
+                          <td>{m.p1Name}</td>
+                          <td>{m.p2Name}</td>
+                          <td>{m.surface || "—"}</td>
+                          <td>{m.winnerName}</td>
+                          <td className="mono">{m.score}</td>
+                          <td style={{ textAlign: "right" }}>
+                            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+                              <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>Edit</button>
+                              <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>Delete</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
 
             <div className="sep" />
             <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
-            <div style={{ maxWidth: 320 }}>
-              <div className="label">How many players are in the {activeDivision === "mens" ? "Men's" : "Women's"} ladder?</div>
-              <input className="textInput" type="number" min={2} max={CAPACITY} value={playerCount} disabled={locked} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
-              <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
+            <div className="mobileOnly collapsibleWrap">
+              <button className="collapseBtn" onClick={() => setMobileSettingsOpen((v) => !v)}>
+                {mobileSettingsOpen ? "Hide player count" : "Show player count"}
+              </button>
+            </div>
+            <div className={mobileSettingsOpen ? "sectionOpen" : "sectionClosedMobileOnly"}>
+              <div style={{ maxWidth: 320 }}>
+                <div className="label">How many players are in the {divisionLabel} ladder?</div>
+                <input className="textInput tallOnMobile" type="number" min={2} max={CAPACITY} value={playerCount} disabled={locked} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
+                <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
+              </div>
             </div>
           </div>
         </div>
 
         <div className="hint" style={{ textAlign: "center", margin: "16px 0 30px" }}>Shared cloud storage via Supabase. Everyone sees the same ladder.</div>
+      </div>
+
+      <div className="mobileBottomBar mobileOnly">
+        <button className="bottomBarBtn" onClick={() => scrollToRef(addMatchRef)}>Add Match</button>
+        <button className="bottomBarBtn" onClick={() => openPin("save")} disabled={locked || !dirty}>Save</button>
+        <button className="bottomBarBtn" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>Top</button>
       </div>
     </div>
   );
@@ -1343,6 +1413,7 @@ const css = `
   }
 
   .container { max-width: 1800px; margin: 0 auto; }
+  .mobileOnly { display: none; }
 
   .card {
     background: var(--card);
@@ -1425,10 +1496,10 @@ const css = `
 
   .ladderTable { min-width: 1100px; }
   .ladderTable th:nth-child(1), .ladderTable td:nth-child(1) {
-    position: sticky; left: 0; z-index: 4; background: rgba(12, 16, 32, 0.96); width: 72px; min-width: 72px; max-width: 72px;
+    position: sticky; left: 0; z-index: 4; background: rgba(8, 12, 24, 0.98); width: 76px; min-width: 76px; max-width: 76px;
   }
   .ladderTable th:nth-child(2), .ladderTable td:nth-child(2) {
-    position: sticky; left: 72px; z-index: 3; background: rgba(12, 16, 32, 0.96); box-shadow: 10px 0 16px rgba(0,0,0,0.22);
+    position: sticky; left: 76px; z-index: 3; background: rgba(8, 12, 24, 0.98); box-shadow: 12px 0 20px rgba(0,0,0,0.28);
   }
 
   th, td { padding: 10px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: middle; }
@@ -1485,7 +1556,10 @@ const css = `
     font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     font-weight: 800; color: rgba(255,255,255,0.78); font-size: 12.5px;
   }
-  .leaderStats { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85); margin-top: 8px; }
+  .leaderStats {
+    font-family: ui-rounded, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85); margin-top: 8px;
+  }
 
   .playerMatchList { display: flex; flex-direction: column; gap: 10px; }
   .playerMatchRow { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.04); border-radius: 14px; padding: 12px; }
@@ -1512,18 +1586,155 @@ const css = `
   .iconBtn { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; }
   .iconBtn:hover { color: var(--text); }
 
+  .mobileSummary {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .summaryPill {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.04);
+    border-radius: 14px;
+    padding: 10px 12px;
+  }
+  .summaryPill.wide { grid-column: 1 / -1; }
+  .summaryLabel { font-size: 11px; color: rgba(255,255,255,0.65); font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
+  .summaryValue { font-size: 15px; font-weight: 800; margin-top: 4px; }
+  .summaryValue.small { font-size: 13px; }
+
+  .quickNav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    margin-bottom: 10px;
+  }
+  .quickNavBtn {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.06);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 9px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .swipeHint {
+    font-size: 12px;
+    color: rgba(255,255,255,0.75);
+    margin-bottom: 8px;
+    font-weight: 700;
+  }
+
+  .collapseBtn {
+    width: 100%;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+  }
+  .collapsibleWrap { margin-bottom: 10px; }
+  .sectionOpen { display: block; }
+  .sectionClosedMobileOnly { display: block; }
+
+  .mobileBottomBar {
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(8, 12, 24, 0.94);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(255,255,255,0.10);
+    z-index: 40;
+  }
+  .bottomBarBtn {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.07);
+    color: var(--text);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .bottomBarBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
   @media (max-width: 720px) {
-    .app { padding: 12px; }
+    .mobileOnly { display: block; }
+    .app { padding: 12px 12px 84px; }
     .title { font-size: 18px; }
     .cardHeader { padding: 12px; }
     .cardBody { padding: 12px; }
+    .mobileStickyHeader {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      backdrop-filter: blur(10px);
+      background: rgba(12, 16, 32, 0.96);
+    }
+    .mobileActions {
+      width: 100%;
+      justify-content: stretch;
+      gap: 8px;
+    }
+    .fullOnMobile { width: 100%; }
+    .segControl.fullOnMobile { width: 100%; }
+    .segBtn { flex: 1; }
     th, td { padding: 9px 8px; }
     .ladderTable { min-width: 980px; }
-    .nameBtn { padding: 8px 10px; font-size: 13px; border-radius: 10px; }
-    .textInput { padding: 10px 10px; border-radius: 12px; }
-    .btn, .btnGhost, .btnDanger { padding: 10px 12px; border-radius: 12px; }
+    .mobileTableWrap { border-color: rgba(255,255,255,0.12); }
+    .nameBtn {
+      padding: 8px 10px;
+      font-size: 13px;
+      border-radius: 10px;
+    }
+    .textInput, .tallOnMobile {
+      padding: 11px 10px;
+      border-radius: 12px;
+    }
+    .btn, .btnGhost, .btnDanger {
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+    .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
-    .segControl { width: 100%; }
-    .segBtn { flex: 1; }
+    .mobileSingle { grid-template-columns: 1fr !important; }
+    .mobileToolbarWrap { padding-top: 10px; }
+    .stackedMobile { flex-direction: column; align-items: flex-start; }
+    .roomy { padding: 14px; }
+    .playerMatchList.mobileSpacious { gap: 12px; }
+    .mobileFull {
+      width: 100%;
+      max-width: none;
+      height: calc(100vh - 24px);
+      display: flex;
+      flex-direction: column;
+    }
+    .mobileFull .modalBody {
+      flex: 1;
+      overflow: auto;
+    }
+    .sectionClosedMobileOnly {
+      display: none;
+    }
+  }
+
+  @media (min-width: 721px) {
+    .sectionClosedMobileOnly,
+    .sectionOpen {
+      display: block !important;
+    }
   }
 `;
