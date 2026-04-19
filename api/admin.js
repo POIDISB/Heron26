@@ -1,29 +1,38 @@
 import { createClient } from "@supabase/supabase-js";
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "POST only" });
+  }
 
   try {
     const { pin, action, payload } = req.body || {};
-    if (!pin || pin !== process.env.ADMIN_PIN) return res.status(401).json({ error: "Bad PIN" });
+
+    if (!pin || pin !== process.env.ADMIN_PIN) {
+      return res.status(401).json({ error: "Bad PIN" });
+    }
+
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(500).json({ error: "Missing Supabase server environment variables" });
+    }
 
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    // action router
     if (action === "saveState") {
-      // payload = { players, matches, playerCount }
-      const { players, matches, playerCount } = payload || {};
-      if (!Array.isArray(players) || !Array.isArray(matches)) {
+      const { players, matches, playerCounts } = payload || {};
+
+      if (!Array.isArray(players) || !Array.isArray(matches) || !playerCounts) {
         return res.status(400).json({ error: "Invalid payload" });
       }
 
       // Upsert players
       const pRows = players.map((p) => ({
         pid: String(p.pid),
-        position: Number(p.position),
+        division: String(p.division || "mens"),
+        position: Number(p.position || 0),
         name: String(p.name || ""),
         matches_played: Number(p.matchesPlayed || 0),
         matches_won: Number(p.matchesWon || 0),
@@ -39,12 +48,18 @@ export default async function handler(req, res) {
         updated_at: new Date().toISOString(),
       }));
 
-      const { error: pErr } = await supabase.from("players").upsert(pRows, { onConflict: "pid" });
-      if (pErr) return res.status(500).json({ error: pErr.message });
+      const { error: pErr } = await supabase
+        .from("players")
+        .upsert(pRows, { onConflict: "pid" });
+
+      if (pErr) {
+        return res.status(500).json({ error: `Players save failed: ${pErr.message}` });
+      }
 
       // Upsert matches
       const mRows = matches.map((m) => ({
         id: String(m.id),
+        division: String(m.division || "mens"),
         date: String(m.date || ""),
         position_played_for: Number(m.positionPlayedFor || 1),
         challenger_pid: String(m.challengerPid || ""),
@@ -57,15 +72,35 @@ export default async function handler(req, res) {
         ladder_move_applied: Boolean(m.ladderMoveApplied),
       }));
 
-      const { error: mErr } = await supabase.from("matches").upsert(mRows, { onConflict: "id" });
-      if (mErr) return res.status(500).json({ error: mErr.message });
+      const { error: mErr } = await supabase
+        .from("matches")
+        .upsert(mRows, { onConflict: "id" });
 
-      // Save playerCount
+      if (mErr) {
+        return res.status(500).json({ error: `Matches save failed: ${mErr.message}` });
+      }
+
+      // Save player counts for both ladders
+      const settingsRows = [
+        {
+          key: "playerCount_mens",
+          value: Number(playerCounts.mens || 40),
+          updated_at: new Date().toISOString(),
+        },
+        {
+          key: "playerCount_womens",
+          value: Number(playerCounts.womens || 40),
+          updated_at: new Date().toISOString(),
+        },
+      ];
+
       const { error: sErr } = await supabase
         .from("settings")
-        .upsert({ key: "playerCount", value: playerCount }, { onConflict: "key" });
+        .upsert(settingsRows, { onConflict: "key" });
 
-      if (sErr) return res.status(500).json({ error: sErr.message });
+      if (sErr) {
+        return res.status(500).json({ error: `Settings save failed: ${sErr.message}` });
+      }
 
       return res.json({ ok: true });
     }
