@@ -211,7 +211,6 @@ const COLS = [
   { key: "may", label: "May Matches" },
   { key: "jun", label: "Jun Matches" },
   { key: "jul", label: "Jul Matches" },
-  { key: "aug", label: "Aug Matches" },
 ];
 
 function valueForColumn(p, colKey) {
@@ -465,6 +464,9 @@ export default function App() {
   const [score, setScore] = useState("");
   const [error, setError] = useState("");
 
+  const [dropPid, setDropPid] = useState("");
+  const [withdrawPid, setWithdrawPid] = useState("");
+
   const [matchAddedOpen, setMatchAddedOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState(null);
@@ -608,6 +610,18 @@ export default function App() {
       if (pinPurpose === "save") {
         closePin();
         await actuallySaveAll(pin);
+        return;
+      }
+
+      if (pinPurpose === "drop3") {
+        closePin();
+        await actuallyDropThreePlaces(pin);
+        return;
+      }
+
+      if (pinPurpose === "withdraw") {
+        closePin();
+        await actuallyWithdrawPlayer(pin);
         return;
       }
     } catch (e) {
@@ -1031,6 +1045,118 @@ export default function App() {
     }
   }
 
+  function isWithdrawnPlayer(p) {
+    return String(p?.name || "").startsWith("W - ");
+  }
+
+  function movePlayerDownByPlaces(sourcePlayers, pid, places) {
+    const target = sourcePlayers.find((p) => p.pid === pid);
+    if (!target) return sourcePlayers;
+    const oldPos = target.position;
+    const activeMax = playerCount;
+    const newPos = clamp(oldPos + places, 1, activeMax);
+    if (newPos === oldPos) return sourcePlayers;
+
+    return sourcePlayers.map((p) => {
+      if (p.pid === pid) return { ...p, position: newPos };
+      if (p.position > oldPos && p.position <= newPos) return { ...p, position: p.position - 1 };
+      return p;
+    });
+  }
+
+  function movePlayerToBottom(sourcePlayers, pid) {
+    const target = sourcePlayers.find((p) => p.pid === pid);
+    if (!target) return sourcePlayers;
+    const oldPos = target.position;
+    const newPos = playerCount;
+    if (newPos === oldPos) return sourcePlayers;
+
+    return sourcePlayers.map((p) => {
+      if (p.pid === pid) return { ...p, position: newPos };
+      if (p.position > oldPos && p.position <= newPos) return { ...p, position: p.position - 1 };
+      return p;
+    });
+  }
+
+  function makeAdminLog(player, message) {
+    return {
+      id: `admin_${uid()}`,
+      division: activeDivision,
+      date: formatDateISO(new Date()),
+      positionPlayedFor: player.position,
+      challengerPid: player.pid,
+      opponentPid: player.pid,
+      winnerId: "p2",
+      score: `ADMIN: ${message}`,
+      surface: "Admin",
+      challengerStartPos: player.position,
+      opponentStartPos: player.position,
+      ladderMoveApplied: false,
+    };
+  }
+
+  async function actuallyDropThreePlaces(pin) {
+    setError("");
+    if (locked) return setError("Locked: Admin unlock required.");
+    const player = players.find((p) => p.pid === dropPid);
+    if (!player) return setError("Choose a player to drop 3 places.");
+    if (player.position >= playerCount) return setError("That player is already at the bottom of the active ladder.");
+
+    const message = `${player.name || "Player"} moved down 3 places for not playing a game in 1 month.`;
+    const nextPlayers = movePlayerDownByPlaces(current.players, player.pid, 3);
+    const nextState = {
+      ...state,
+      [activeDivision]: {
+        ...current,
+        players: nextPlayers,
+        matches: [makeAdminLog(player, message), ...current.matches],
+      },
+    };
+
+    setState(nextState);
+    setDirty(true);
+    try {
+      await saveCloudState(pin, nextState);
+      setDirty(false);
+      setDropPid("");
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to save drop action to cloud."));
+    }
+  }
+
+  async function actuallyWithdrawPlayer(pin) {
+    setError("");
+    if (locked) return setError("Locked: Admin unlock required.");
+    const player = players.find((p) => p.pid === withdrawPid);
+    if (!player) return setError("Choose a player to withdraw.");
+
+    const withdrawnName = isWithdrawnPlayer(player) ? player.name : `W - ${player.name || "Withdrawn player"}`;
+    const message = `${player.name || "Player"} withdrawn and moved to the bottom of the ladder.`;
+    const moved = movePlayerToBottom(current.players, player.pid).map((p) => {
+      if (p.pid !== player.pid) return p;
+      return { ...p, name: withdrawnName };
+    });
+
+    const nextState = {
+      ...state,
+      [activeDivision]: {
+        ...current,
+        players: moved,
+        matches: [makeAdminLog(player, message), ...current.matches],
+      },
+    };
+
+    setState(nextState);
+    setDirty(true);
+    try {
+      await saveCloudState(pin, nextState);
+      setDirty(false);
+      setWithdrawPid("");
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to save withdraw action to cloud."));
+    }
+  }
+
   const pinTitle =
     pinPurpose === "unlock"
       ? "Admin unlock"
@@ -1040,6 +1166,10 @@ export default function App() {
       ? "Admin PIN required to delete match"
       : pinPurpose === "edit"
       ? "Admin PIN required to save edit"
+      : pinPurpose === "drop3"
+      ? "Admin PIN required to drop player"
+      : pinPurpose === "withdraw"
+      ? "Admin PIN required to withdraw player"
       : "Admin PIN required to save changes";
 
   const pinHint =
@@ -1051,6 +1181,10 @@ export default function App() {
       ? "PIN required before deleting a match."
       : pinPurpose === "edit"
       ? "PIN required to save an edit."
+      : pinPurpose === "drop3"
+      ? "PIN required to move this player down 3 places."
+      : pinPurpose === "withdraw"
+      ? "PIN required to withdraw this player."
       : "PIN required to push your changes to the cloud.";
 
   const opponentLabel = useMemo(() => {
@@ -1235,8 +1369,8 @@ export default function App() {
                 </thead>
                 <tbody>
                   {displayedPlayers.map((p) => (
-                    <tr key={p.pid} style={ladderRowStyle(p.position)}>
-                      <td className="posCell">{p.position}</td>
+                    <tr key={p.pid} className={isWithdrawnPlayer(p) ? "withdrawnRow" : ""} style={ladderRowStyle(p.position)}>
+                      <td className="posCell">{isWithdrawnPlayer(p) ? "W" : p.position}</td>
                       <td>
                         {locked ? (
                           <button type="button" className="nameBtn" style={latestResultStyle(p.pid)} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} title="Tap to view results">{p.name || "—"}</button>
@@ -1256,7 +1390,7 @@ export default function App() {
                       <td><StatCell locked={locked} value={p.may} onChange={(v) => updatePlayer(p.pid, "may", v)} /></td>
                       <td><StatCell locked={locked} value={p.jun} onChange={(v) => updatePlayer(p.pid, "jun", v)} /></td>
                       <td><StatCell locked={locked} value={p.jul} onChange={(v) => updatePlayer(p.pid, "jul", v)} /></td>
-                      <td><StatCell locked={locked} value={p.aug} onChange={(v) => updatePlayer(p.pid, "aug", v)} /></td>
+                      
                     </tr>
                   ))}
                 </tbody>
@@ -1339,11 +1473,11 @@ export default function App() {
                         <tr key={m.id}>
                           <td className="mono">{m.date}</td>
                           <td>#{m.positionPlayedFor}</td>
-                          <td>{m.p1Name}</td>
-                          <td>{m.p2Name}</td>
+                          <td>{String(m.score || "").startsWith("ADMIN:") ? m.p1Name : m.p1Name}</td>
+                          <td>{String(m.score || "").startsWith("ADMIN:") ? "—" : m.p2Name}</td>
                           <td>{m.surface || "—"}</td>
-                          <td>{m.winnerName}</td>
-                          <td className="mono">{m.score}</td>
+                          <td>{String(m.score || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
+                          <td className="mono">{String(m.score || "").startsWith("ADMIN:") ? String(m.score).replace("ADMIN: ", "") : m.score}</td>
                           <td style={{ textAlign: "right" }}>
                             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
                               <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>Edit</button>
@@ -1356,6 +1490,42 @@ export default function App() {
                   </table>
                 </div>
               )}
+            </div>
+
+            <div className="sep" />
+
+            <div className="managementGrid">
+              <div className="managementBox">
+                <div className="cardTitle">No games played in 1 month</div>
+                <div className="hint">Choose a player and move them down 3 places in the {divisionLabel} ladder.</div>
+                <select className="textInput tallOnMobile" value={dropPid} onChange={(e) => setDropPid(e.target.value)} disabled={locked}>
+                  <option value="">Select player…</option>
+                  {selectablePlayers.map((p) => (
+                    <option key={p.pid} value={p.pid}>
+                      #{p.position} — {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn fullWidthOnMobile" disabled={locked || !dropPid} onClick={() => openPin("drop3")}>
+                  Drop 3 places
+                </button>
+              </div>
+
+              <div className="managementBox">
+                <div className="cardTitle">Withdraw player</div>
+                <div className="hint">Move a player to the bottom, mark them with W, and grey out the row.</div>
+                <select className="textInput tallOnMobile" value={withdrawPid} onChange={(e) => setWithdrawPid(e.target.value)} disabled={locked}>
+                  <option value="">Select player…</option>
+                  {selectablePlayers.map((p) => (
+                    <option key={p.pid} value={p.pid}>
+                      #{p.position} — {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button className="btnDanger fullWidthOnMobile" disabled={locked || !withdrawPid} onClick={() => openPin("withdraw")}>
+                  Withdraw
+                </button>
+              </div>
             </div>
 
             <div className="sep" />
@@ -1490,6 +1660,35 @@ const css = `
   }
 
   .sep { height: 1px; background: var(--border); margin: 14px 0; }
+
+  .managementGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .managementBox {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.035);
+    border-radius: 14px;
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .withdrawnRow {
+    opacity: 0.62;
+    filter: grayscale(0.75);
+  }
+
+  .withdrawnRow td {
+    background: rgba(120, 120, 120, 0.16) !important;
+  }
+
+  .withdrawnRow .nameBtn {
+    color: rgba(255,255,255,0.62);
+    border-color: rgba(255,255,255,0.05);
+  }
 
   .tableWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }
   .table { width: 100%; border-collapse: collapse; min-width: 1100px; background: rgba(0,0,0,0.12); }
@@ -1711,6 +1910,7 @@ const css = `
     .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
+    .managementGrid { grid-template-columns: 1fr; }
     .mobileToolbarWrap { padding-top: 10px; }
     .stackedMobile { flex-direction: column; align-items: flex-start; }
     .roomy { padding: 14px; }
