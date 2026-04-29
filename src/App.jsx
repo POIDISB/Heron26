@@ -98,35 +98,53 @@ function defaultState() {
   };
 }
 
-function parseScore(scoreStr) {
-  const raw = String(scoreStr || "").trim();
-  if (!raw) return { valid: false, sets: [], message: "Please enter a score (e.g. 6-4 6-3)." };
+function formatScore(score) {
+  const parsed = parseScore(score);
+  return parsed.isMTB ? score + " (MTB)" : score;
+}
 
-  const NL = String.fromCharCode(10);
-  const TAB = String.fromCharCode(9);
-  let cleaned = raw.split(NL).join(" ").split(TAB).join(" ");
-  while (cleaned.includes("  ")) cleaned = cleaned.split("  ").join(" ");
+function parseScore(score) {
+  if (!score) return { setsWon: 0, setsLost: 0, gamesWon: 0, gamesLost: 0, isMTB: false };
 
-  const parts = cleaned.split(" ").filter(Boolean);
-  const sets = [];
+  const sets = score.split(",").map(s => s.trim());
 
-  for (const part of parts) {
-    let a = "";
-    let b = "";
+  let setsWon = 0;
+  let setsLost = 0;
+  let gamesWon = 0;
+  let gamesLost = 0;
+  let isMTB = false;
 
-    if (part.includes("-")) {
-      const bits = part.split("-");
-      if (bits.length !== 2) return { valid: false, sets: [], message: `Couldn't read set: "${part}"` };
-      a = bits[0];
-      b = bits[1];
-    } else if (part.includes(":")) {
-      const bits = part.split(":");
-      if (bits.length !== 2) return { valid: false, sets: [], message: `Couldn't read set: "${part}"` };
-      a = bits[0];
-      b = bits[1];
+  sets.forEach(set => {
+    const parts = set.split("-");
+    if (parts.length !== 2) return;
+
+    const a = parseInt(parts[0], 10);
+    const b = parseInt(parts[1], 10);
+
+    if (isNaN(a) || isNaN(b)) return;
+
+    const isMatchTiebreak = a >= 10 || b >= 10;
+
+    if (isMatchTiebreak) {
+      isMTB = true;
+      if (a > b) {
+        setsWon += 1;
+        gamesWon += 1;
+      } else {
+        setsLost += 1;
+        gamesLost += 1;
+      }
     } else {
-      return { valid: false, sets: [], message: `Couldn't read set: "${part}"` };
+      if (a > b) setsWon += 1;
+      else setsLost += 1;
+
+      gamesWon += a;
+      gamesLost += b;
     }
+  });
+
+  return { setsWon, setsLost, gamesWon, gamesLost, isMTB };
+}
 
     const p1 = asNumber(a, NaN);
     const p2 = asNumber(b, NaN);
@@ -458,7 +476,7 @@ export default function App() {
 
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
   const [matchPos, setMatchPos] = useState("1");
-  const [challengerPid, setChallengerPid] = useState("");
+  const [challengerPid, setPid] = useState("");
   const [winner, setWinner] = useState("p2");
   const [surface, setSurface] = useState("Outdoor Hard Court");
   const [score, setScore] = useState("");
@@ -536,7 +554,7 @@ export default function App() {
   useEffect(() => {
     setWinner("p2");
     setMatchPos("1");
-    setChallengerPid("");
+    setPid("");
     setScore("");
     setError("");
   }, [activeDivision]);
@@ -757,10 +775,10 @@ export default function App() {
     if (!p2) return setError("Invalid position selected.");
     if (!String(p2.name || "").trim()) return setError(`The player at position #${pos} has no name yet.`);
 
-    if (!challengerPid) return setError("Pick a Challenger.");
+    if (!challengerPid) return setError("Pick a .");
     const p1 = players.find((p) => p.pid === challengerPid);
-    if (!p1 || !String(p1.name || "").trim()) return setError("Challenger is missing / has no name.");
-    if (p1.pid === p2.pid) return setError("Challenger can't play themselves.");
+    if (!p1 || !String(p1.name || "").trim()) return setError(" is missing / has no name.");
+    if (p1.pid === p2.pid) return setError(" can't play themselves.");
 
     const parsed = parseScore(score);
     if (!parsed.valid) return setError(parsed.message || "Score not recognised.");
@@ -1237,9 +1255,9 @@ export default function App() {
           return (
             <div className="playerMatchList mobileSpacious">
               {list.map((m) => {
-                const isChallenger = m.challengerPid === pid;
-                const opponentName = isChallenger ? m.p2Name : m.p1Name;
-                const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
+                const is = m.challengerPid === pid;
+                const opponentName = is ? m.p2Name : m.p1Name;
+                const didWin = (m.winnerId === "p1" && is) || (m.winnerId === "p2" && !is);
                 return (
                   <div key={m.id} className="playerMatchRow roomy">
                     <div className="playerMatchTop">
@@ -1250,11 +1268,11 @@ export default function App() {
                       <div>
                         <div className="playerMatchTitle">{pname} vs {opponentName}</div>
                         <div className="hint">
-                          Played for #{m.positionPlayedFor} • {m.surface || "—"} • {isChallenger ? "Challenger" : "Opponent"}
+                          Played for #{m.positionPlayedFor} • {m.surface || "—"} • {is ? "" : ""}
                           {m.ladderMoveApplied ? " • Ladder moved" : ""}
                         </div>
                       </div>
-                      <div className="mono playerMatchScore">{m.score}</div>
+                      <div className="mono playerMatchScore">{formatScore(m.score)}</div>
                     </div>
                   </div>
                 );
@@ -1284,12 +1302,12 @@ export default function App() {
           <div>
             <div className="label">Winner</div>
             <select className="textInput" value={editWinner} onChange={(e) => setEditWinner(e.target.value)}>
-              <option value="p1">Challenger</option>
-              <option value="p2">Opponent</option>
+              <option value="p1"></option>
+              <option value="p2"></option>
             </select>
           </div>
           <div>
-            <div className="label">Score (Challenger perspective)</div>
+            <div className="label">Score ( perspective)</div>
             <input className="textInput" value={editScore} onChange={(e) => setEditScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" />
           </div>
         </div>
@@ -1421,8 +1439,8 @@ export default function App() {
                 <div className="hint">Selected: {opponentLabel}</div>
               </div>
               <div>
-                <div className="label">Challenger</div>
-                <select className="textInput tallOnMobile" value={challengerPid} onChange={(e) => setChallengerPid(e.target.value)} disabled={locked}>
+                <div className="label"></div>
+                <select className="textInput tallOnMobile" value={challengerPid} onChange={(e) => setPid(e.target.value)} disabled={locked}>
                   <option value="">Select…</option>
                   {selectablePlayers.map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
                 </select>
@@ -1437,14 +1455,14 @@ export default function App() {
               <div>
                 <div className="label">Winner</div>
                 <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
-                  <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
-                  <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
+                  <option value="p1">{challenger?.name?.trim() ? challenger.name : ""}</option>
+                  <option value="p2">{opponent?.name?.trim() ? opponent.name : ""}</option>
                 </select>
               </div>
             </div>
 
             <div style={{ marginTop: 12 }}>
-              <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
+              <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "'s"} perspective)</div>
               <input className="textInput tallOnMobile" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
               <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
               <button className="btn fullWidthOnMobile" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>Add match</button>
@@ -1465,7 +1483,7 @@ export default function App() {
                   <table className="table">
                     <thead>
                       <tr>
-                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th><th style={{ textAlign: "right" }}>Actions</th>
+                        <th>Date</th><th>Played for</th><th></th><th></th><th>Surface</th><th>Winner</th><th>Score</th><th style={{ textAlign: "right" }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1473,11 +1491,11 @@ export default function App() {
                         <tr key={m.id}>
                           <td className="mono">{m.date}</td>
                           <td>#{m.positionPlayedFor}</td>
-                          <td>{String(m.score || "").startsWith("ADMIN:") ? m.p1Name : m.p1Name}</td>
-                          <td>{String(m.score || "").startsWith("ADMIN:") ? "—" : m.p2Name}</td>
+                          <td>{String(formatScore(m.score) || "").startsWith("ADMIN:") ? m.p1Name : m.p1Name}</td>
+                          <td>{String(formatScore(m.score) || "").startsWith("ADMIN:") ? "—" : m.p2Name}</td>
                           <td>{m.surface || "—"}</td>
-                          <td>{String(m.score || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
-                          <td className="mono">{String(m.score || "").startsWith("ADMIN:") ? String(m.score).replace("ADMIN: ", "") : m.score}</td>
+                          <td>{String(formatScore(m.score) || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
+                          <td className="mono">{String(formatScore(m.score) || "").startsWith("ADMIN:") ? String(formatScore(m.score)).replace("ADMIN: ", "") : formatScore(m.score)}</td>
                           <td style={{ textAlign: "right" }}>
                             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
                               <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>Edit</button>
