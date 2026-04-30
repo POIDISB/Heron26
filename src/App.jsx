@@ -108,7 +108,12 @@ function parseScore(raw) {
     return { valid: false, sets: [], gamesWon: 0, gamesLost: 0, isMTB: false };
   }
 
-  const parts = raw.split(",");
+  const parts = raw
+  .trim()
+  .split(/[\s,]+/)
+  .filter(p => p.includes("-"));
+
+
   let gamesWon = 0;
   let gamesLost = 0;
   let isMTB = false;
