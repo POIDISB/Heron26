@@ -103,74 +103,61 @@ function formatScore(score) {
   return parsed.isMTB ? score + " (MTB)" : score;
 }
 
-function parseScore(raw) {
-  if (!raw || typeof raw !== "string") {
-    return { valid: false, sets: [], gamesWon: 0, gamesLost: 0, isMTB: false };
-  }
+function parseScore(score) {
+  if (!score) return { setsWon: 0, setsLost: 0, gamesWon: 0, gamesLost: 0, isMTB: false };
 
-  const parts = raw
-  .trim()
-  .split(/[\s,]+/)
-  .filter(p => p.includes("-"));
+  const sets = score.split(",").map(s => s.trim());
 
-
+  let setsWon = 0;
+  let setsLost = 0;
   let gamesWon = 0;
   let gamesLost = 0;
   let isMTB = false;
 
-  for (const part of parts) {
-    const trimmed = part.trim();
+  sets.forEach(set => {
+    const parts = set.split("-");
+    if (parts.length !== 2) return;
 
-    if (!trimmed.includes("-")) {
-      return {
-        valid: false,
-        sets: [],
-        message: `Couldn't read set: "${part}"`,
-        gamesWon: 0,
-        gamesLost: 0,
-        isMTB: false,
-      };
-    }
+    const a = parseInt(parts[0], 10);
+    const b = parseInt(parts[1], 10);
 
-    const [aStr, bStr] = trimmed.split("-");
-    const a = Number(aStr);
-    const b = Number(bStr);
+    if (isNaN(a) || isNaN(b)) return;
 
-    if (isNaN(a) || isNaN(b)) {
-      return {
-        valid: false,
-        sets: [],
-        message: `Couldn't read set: "${part}"`,
-        gamesWon: 0,
-        gamesLost: 0,
-        isMTB: false,
-      };
-    }
-
-    // 🎾 MTB detection
     const isMatchTiebreak = a >= 10 || b >= 10;
 
     if (isMatchTiebreak) {
       isMTB = true;
-
       if (a > b) {
+        setsWon += 1;
         gamesWon += 1;
       } else {
+        setsLost += 1;
         gamesLost += 1;
       }
     } else {
+      if (a > b) setsWon += 1;
+      else setsLost += 1;
+
       gamesWon += a;
       gamesLost += b;
     }
+  });
+
+  return { setsWon, setsLost, gamesWon, gamesLost, isMTB };
+}
+
+    const p1 = asNumber(a, NaN);
+    const p2 = asNumber(b, NaN);
+    if (!Number.isFinite(p1) || !Number.isFinite(p2)) {
+      return { valid: false, sets: [], message: `Couldn't read set: "${part}"` };
+    }
+
+    sets.push({ p1, p2 });
   }
 
-  return {
-    valid: true,
-    gamesWon,
-    gamesLost,
-    isMTB,
-  };
+  return { valid: true, sets };
 }
+
 function validateSets(sets) {
   if (!Array.isArray(sets) || sets.length < 2) {
     return { ok: false, message: "Enter at least 2 sets (e.g. 6-4 6-3)." };
