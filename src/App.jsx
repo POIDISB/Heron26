@@ -21,6 +21,12 @@ const DIVISIONS = [
   { key: "womens", label: "Women's" },
 ];
 
+const DROP_PERIODS = [
+  { key: "apr26_may31", label: "April 26th – May 31st", start: "2026-04-26", end: "2026-05-31" },
+  { key: "jun", label: "June 1st – June 30th", start: "2026-06-01", end: "2026-06-30" },
+  { key: "jul", label: "July 1st – July 31st", start: "2026-07-01", end: "2026-07-31" },
+];
+
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
@@ -477,7 +483,8 @@ export default function App() {
   const [score, setScore] = useState("");
   const [error, setError] = useState("");
 
-  const [dropPid, setDropPid] = useState("");
+  const [dropPeriodKey, setDropPeriodKey] = useState("apr26_may31");
+  const [selectedDropPids, setSelectedDropPids] = useState([]);
   const [withdrawPid, setWithdrawPid] = useState("");
 
   const [matchAddedOpen, setMatchAddedOpen] = useState(false);
@@ -689,6 +696,33 @@ export default function App() {
     [players, playerCount]
   );
 
+  const selectedDropPeriod = useMemo(
+    () => DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0],
+    [dropPeriodKey]
+  );
+
+  const eligibleDropPlayers = useMemo(() => {
+    const period = DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0];
+
+    return players
+      .filter((p) => p.position >= 1 && p.position <= playerCount)
+      .filter((p) => String(p.name || "").trim().length > 0)
+      .filter((p) => !isWithdrawnPlayer(p))
+      .filter((p) => {
+        return !matches.some((m) => {
+          if (String(m.score || "").startsWith("ADMIN:")) return false;
+          const date = String(m.date || "");
+          if (date < period.start || date > period.end) return false;
+          return m.challengerPid === p.pid || m.opponentPid === p.pid;
+        });
+      })
+      .sort((a, b) => a.position - b.position);
+  }, [players, matches, playerCount, dropPeriodKey]);
+
+  useEffect(() => {
+    setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid));
+  }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
+
   const leaderboardTop3 = useMemo(() => {
     const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
@@ -876,8 +910,49 @@ export default function App() {
       return;
     }
 
-    const parsed = parseScore(match.score);
     let nextPlayers = current.players;
+
+    if (isAdminDropMatch(match)) {
+      if (!isLatestActionForPlayer(match)) {
+        setError("That drop action can only be reversed if it is the player's most recent action.");
+        setDeleteConfirmOpen(false);
+        setDeleteTargetId(null);
+        setPinPayload(null);
+        return;
+      }
+
+      nextPlayers = moveActivePlayerToPosition(
+        current.players,
+        match.challengerPid,
+        Number(match.challengerStartPos || match.positionPlayedFor || 1)
+      );
+
+      const nextState = {
+        ...state,
+        [activeDivision]: {
+          ...current,
+          matches: current.matches.filter((m) => m.id !== id),
+          players: nextPlayers,
+        },
+      };
+
+      setState(nextState);
+      setDirty(true);
+
+      try {
+        await saveCloudState(pin, nextState);
+        setDirty(false);
+      } catch (e) {
+        setError(String(e?.message || e || "Failed to reverse drop action in cloud."));
+      }
+
+      setDeleteConfirmOpen(false);
+      setDeleteTargetId(null);
+      setPinPayload(null);
+      return;
+    }
+
+    const parsed = parseScore(match.score);
 
     if (parsed.valid) {
       const validity = validateSets(parsed.sets);
@@ -1071,36 +1146,113 @@ export default function App() {
     return String(p?.name || "").startsWith("W - ");
   }
 
+  function isAdminDropMatch(match) {
+    return (
+      String(match?.score || "").startsWith("ADMIN:") &&
+      String(match?.score || "").toLowerCase().includes("moved down 3 places")
+    );
+  }
+
+  function isLatestActionForPlayer(match) {
+    const pid = match?.challengerPid;
+    if (!pid) return false;
+
+    const actions = [...current.matches]
+      .filter((m) => m.challengerPid === pid || m.opponentPid === pid)
+      .sort((a, b) => {
+        const d = String(b.date).localeCompare(String(a.date));
+        if (d !== 0) return d;
+        return String(b.id).localeCompare(String(a.id));
+      });
+
+    return actions[0]?.id === match.id;
+  }
+
+  function moveActivePlayerToPosition(sourcePlayers, pid, targetPosition) {
+    const target = sourcePlayers.find((p) => p.pid === pid);
+    if (!target || isWithdrawnPlayer(target)) return sourcePlayers;
+
+    const active = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const withdrawn = sourcePlayers
+      .filter((p) => isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const currentIndex = active.findIndex((p) => p.pid === pid);
+    if (currentIndex === -1) return sourcePlayers;
+
+    const safeTargetIndex = clamp(Number(targetPosition || 1), 1, active.length) - 1;
+    const reorderedActive = [...active];
+    const [movedPlayer] = reorderedActive.splice(currentIndex, 1);
+    reorderedActive.splice(safeTargetIndex, 0, movedPlayer);
+
+    return [
+      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
+    ];
+  }
+
   function movePlayerDownByPlaces(sourcePlayers, pid, places) {
     const target = sourcePlayers.find((p) => p.pid === pid);
-    if (!target) return sourcePlayers;
-    const oldPos = target.position;
-    const activeMax = playerCount;
-    const newPos = clamp(oldPos + places, 1, activeMax);
-    if (newPos === oldPos) return sourcePlayers;
+    if (!target || isWithdrawnPlayer(target)) return sourcePlayers;
 
-    return sourcePlayers.map((p) => {
-      if (p.pid === pid) return { ...p, position: newPos };
-      if (p.position > oldPos && p.position <= newPos) return { ...p, position: p.position - 1 };
-      return p;
-    });
+    // Withdrawn players are anchored to the bottom. Active players can only
+    // be dropped within the active section, never below withdrawn players.
+    const active = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const withdrawn = sourcePlayers
+      .filter((p) => isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const currentIndex = active.findIndex((p) => p.pid === pid);
+    if (currentIndex === -1) return sourcePlayers;
+
+    const newIndex = Math.min(currentIndex + places, active.length - 1);
+    if (newIndex === currentIndex) return sourcePlayers;
+
+    const reorderedActive = [...active];
+    const [movedPlayer] = reorderedActive.splice(currentIndex, 1);
+    reorderedActive.splice(newIndex, 0, movedPlayer);
+
+    return [
+      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
+    ];
   }
 
   function movePlayerToBottom(sourcePlayers, pid) {
     const target = sourcePlayers.find((p) => p.pid === pid);
     if (!target) return sourcePlayers;
-    const oldPos = target.position;
-    const newPos = playerCount;
-    if (newPos === oldPos) return sourcePlayers;
 
-    return sourcePlayers.map((p) => {
-      if (p.pid === pid) return { ...p, position: newPos };
-      if (p.position > oldPos && p.position <= newPos) return { ...p, position: p.position - 1 };
-      return p;
-    });
+    // Withdraw means bottom of the whole ladder, below all active players.
+    // Existing withdrawn players remain grouped at the bottom too.
+    const activeWithoutTarget = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid)
+      .sort((a, b) => a.position - b.position);
+
+    const withdrawnWithoutTarget = sourcePlayers
+      .filter((p) => isWithdrawnPlayer(p) && p.pid !== pid)
+      .sort((a, b) => a.position - b.position);
+
+    const withdrawnTarget = {
+      ...target,
+      name: isWithdrawnPlayer(target) ? target.name : `W - ${target.name || "Withdrawn player"}`,
+    };
+
+    const rebuilt = [
+      ...activeWithoutTarget,
+      withdrawnTarget,
+      ...withdrawnWithoutTarget,
+    ];
+
+    return rebuilt.map((p, i) => ({ ...p, position: i + 1 }));
   }
 
-  function makeAdminLog(player, message) {
+  function makeAdminLog(player, message, options = {}) {
     return {
       id: `admin_${uid()}`,
       division: activeDivision,
@@ -1114,27 +1266,66 @@ export default function App() {
       winnerNameSnapshot: "Admin action",
       score: `ADMIN: ${message}`,
       surface: "Admin",
-      challengerStartPos: player.position,
-      opponentStartPos: player.position,
-      ladderMoveApplied: false,
+      challengerStartPos: Number(options.challengerStartPos ?? player.position),
+      opponentStartPos: Number(options.opponentStartPos ?? player.position),
+      ladderMoveApplied: Boolean(options.ladderMoveApplied || false),
     };
   }
 
   async function actuallyDropThreePlaces(pin) {
     setError("");
     if (locked) return setError("Locked: Admin unlock required.");
-    const player = players.find((p) => p.pid === dropPid);
-    if (!player) return setError("Choose a player to drop 3 places.");
-    if (player.position >= playerCount) return setError("That player is already at the bottom of the active ladder.");
 
-    const message = `${player.name || "Player"} moved down 3 places for not playing a game in 1 month.`;
-    const nextPlayers = movePlayerDownByPlaces(current.players, player.pid, 3);
+    const period = DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0];
+    const chosenPlayers = selectedDropPids
+      .map((pid) => players.find((p) => p.pid === pid))
+      .filter(Boolean)
+      .filter((p) => !isWithdrawnPlayer(p));
+
+    if (chosenPlayers.length === 0) {
+      return setError("Choose at least one eligible player to drop 3 places.");
+    }
+
+    // Apply from lower-ranked to higher-ranked so multiple drops in one batch
+    // do not unexpectedly shove already-processed players around.
+    const orderedPlayers = [...chosenPlayers].sort((a, b) => b.position - a.position);
+
+    let nextPlayers = current.players;
+    const adminLogs = [];
+
+    for (const player of orderedPlayers) {
+      const before = nextPlayers.find((p) => p.pid === player.pid);
+      if (!before || isWithdrawnPlayer(before)) continue;
+
+      const activePlayers = nextPlayers
+        .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
+        .sort((a, b) => a.position - b.position);
+      const activeIndex = activePlayers.findIndex((p) => p.pid === before.pid);
+      if (activeIndex === -1 || activeIndex >= activePlayers.length - 1) continue;
+
+      nextPlayers = movePlayerDownByPlaces(nextPlayers, before.pid, 3);
+      const after = nextPlayers.find((p) => p.pid === before.pid);
+      if (!after || after.position === before.position) continue;
+
+      const message = `${before.name || "Player"} moved down 3 places for not playing a match between ${period.label}.`;
+      adminLogs.push(
+        makeAdminLog(before, message, {
+          challengerStartPos: before.position,
+          opponentStartPos: after.position,
+        })
+      );
+    }
+
+    if (adminLogs.length === 0) {
+      return setError("No selected players could be dropped. They may already be at the bottom of the active ladder.");
+    }
+
     const nextState = {
       ...state,
       [activeDivision]: {
         ...current,
         players: nextPlayers,
-        matches: [makeAdminLog(player, message), ...current.matches],
+        matches: [...adminLogs, ...current.matches],
       },
     };
 
@@ -1143,9 +1334,9 @@ export default function App() {
     try {
       await saveCloudState(pin, nextState);
       setDirty(false);
-      setDropPid("");
+      setSelectedDropPids([]);
     } catch (e) {
-      setError(String(e?.message || e || "Failed to save drop action to cloud."));
+      setError(String(e?.message || e || "Failed to save batch drop action to cloud."));
     }
   }
 
@@ -1521,18 +1712,55 @@ export default function App() {
 
             <div className="managementGrid">
               <div className="managementBox">
-                <div className="cardTitle">No games played in 1 month</div>
-                <div className="hint">Choose a player and move them down 3 places in the {divisionLabel} ladder.</div>
-                <select className="textInput tallOnMobile" value={dropPid} onChange={(e) => setDropPid(e.target.value)} disabled={locked}>
-                  <option value="">Select player…</option>
-                  {selectablePlayers.map((p) => (
-                    <option key={p.pid} value={p.pid}>
-                      #{p.position} — {p.name}
-                    </option>
+                <div className="cardTitle">Drop 3 places</div>
+                <div className="hint">Choose a period, review players with no matches in that window, then drop them in one batch.</div>
+                <select className="textInput tallOnMobile" value={dropPeriodKey} onChange={(e) => setDropPeriodKey(e.target.value)} disabled={locked}>
+                  {DROP_PERIODS.map((period) => (
+                    <option key={period.key} value={period.key}>{period.label}</option>
                   ))}
                 </select>
-                <button className="btn fullWidthOnMobile" disabled={locked || !dropPid} onClick={() => openPin("drop3")}>
-                  Drop 3 places
+
+                <div className="batchList">
+                  {eligibleDropPlayers.length === 0 ? (
+                    <div className="hint">Everyone has played in this period, or there are no eligible active players.</div>
+                  ) : (
+                    eligibleDropPlayers.map((p) => (
+                      <label key={p.pid} className="batchCheck">
+                        <input
+                          type="checkbox"
+                          checked={selectedDropPids.includes(p.pid)}
+                          onChange={(e) => {
+                            setSelectedDropPids((prev) =>
+                              e.target.checked ? [...prev, p.pid] : prev.filter((id) => id !== p.pid)
+                            );
+                          }}
+                          disabled={locked}
+                        />
+                        <span>#{p.position} — {p.name}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+
+                <div className="row" style={{ gap: 8 }}>
+                  <button
+                    className="btnGhost"
+                    disabled={locked || eligibleDropPlayers.length === 0}
+                    onClick={() => setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid))}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    className="btnGhost"
+                    disabled={locked || selectedDropPids.length === 0}
+                    onClick={() => setSelectedDropPids([])}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <button className="btn fullWidthOnMobile" disabled={locked || selectedDropPids.length === 0} onClick={() => openPin("drop3")}>
+                  Drop {selectedDropPids.length} selected player{selectedDropPids.length === 1 ? "" : "s"} 3 places
                 </button>
               </div>
 
@@ -1700,6 +1928,27 @@ const css = `
     display: grid;
     gap: 10px;
   }
+
+  .batchList {
+    max-height: 220px;
+    overflow: auto;
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    background: rgba(0,0,0,0.12);
+  }
+
+  .batchCheck {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .batchCheck input { width: 16px; height: 16px; }
 
   .withdrawnRow {
     opacity: 0.62;
