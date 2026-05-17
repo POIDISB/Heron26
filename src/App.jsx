@@ -419,6 +419,9 @@ async function fetchCloudState() {
           winnerId: row.winner_id === "p1" || row.winner_id === "p2" ? row.winner_id : "p2",
           score: String(row.score || ""),
           surface: String(row.surface || ""),
+          challengerName: String(row.challenger_name || ""),
+          opponentName: String(row.opponent_name || ""),
+          winnerNameSnapshot: String(row.winner_name || ""),
           challengerStartPos: asNumber(row.challenger_start_pos, 0),
           opponentStartPos: asNumber(row.opponent_start_pos, 0),
           ladderMoveApplied: Boolean(row.ladder_move_applied),
@@ -707,11 +710,14 @@ export default function App() {
       .map((m) => {
         const p1 = byPid.get(m.challengerPid);
         const p2 = byPid.get(m.opponentPid);
-        const p1Base = p1?.name || "(Unknown)";
-        const p2Base = p2?.name || "(Unknown)";
-        const p1Name = isActive(m.challengerPid) ? p1Base : `${p1Base} (Inactive)`;
-        const p2Name = isActive(m.opponentPid) ? p2Base : `${p2Base} (Inactive)`;
-        const winnerName = m.winnerId === "p1" ? p1Name : p2Name;
+        const p1Snapshot = String(m.challengerName || "").trim();
+        const p2Snapshot = String(m.opponentName || "").trim();
+        const p1Base = p1Snapshot || p1?.name || "(Unknown)";
+        const p2Base = p2Snapshot || p2?.name || "(Unknown)";
+        const p1Name = p1Base;
+        const p2Name = p2Base;
+        const winnerSnapshot = String(m.winnerNameSnapshot || "").trim();
+        const winnerName = winnerSnapshot || (m.winnerId === "p1" ? p1Name : p2Name);
         return { ...m, p1Name, p2Name, winnerName: winnerName || "(Unknown)" };
       });
   }, [matches, players, playerCount]);
@@ -794,6 +800,9 @@ export default function App() {
       challengerPid: p1.pid,
       opponentPid: p2.pid,
       winnerId: winner,
+      challengerName: p1.name || "",
+      opponentName: p2.name || "",
+      winnerNameSnapshot: winner === "p1" ? (p1.name || "") : (p2.name || ""),
       score: String(score || "").trim(),
       surface,
       challengerStartPos,
@@ -1002,6 +1011,9 @@ export default function App() {
       date: editDate,
       surface: editSurface,
       winnerId: editWinner,
+      challengerName: original.challengerName || "",
+      opponentName: original.opponentName || "",
+      winnerNameSnapshot: editWinner === "p1" ? (original.challengerName || "") : (original.opponentName || ""),
       score: String(editScore || "").trim(),
     };
 
@@ -1097,6 +1109,9 @@ export default function App() {
       challengerPid: player.pid,
       opponentPid: player.pid,
       winnerId: "p2",
+      challengerName: player.name || "Player",
+      opponentName: "",
+      winnerNameSnapshot: "Admin action",
       score: `ADMIN: ${message}`,
       surface: "Admin",
       challengerStartPos: player.position,
