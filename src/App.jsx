@@ -86,6 +86,7 @@ function createEmptyPlayer(position, division) {
     jun: 0,
     jul: 0,
     aug: 0,
+    withdrawn: false,
   };
 }
 
@@ -146,6 +147,17 @@ function formatScore(score) {
   if (String(score || "").startsWith("ADMIN:")) return String(score || "");
   const parsed = parseScore(score);
   return parsed.isMTB ? `${score} (MTB)` : score;
+}
+
+function formatScoreForPlayer(score, isChallenger) {
+  if (String(score || "").startsWith("ADMIN:")) return String(score || "");
+  if (isChallenger) return formatScore(score);
+
+  const parsed = parseScore(score);
+  if (!parsed.valid) return formatScore(score);
+
+  const flipped = parsed.sets.map((s) => `${s.p2}-${s.p1}`).join(" ");
+  return parsed.isMTB ? `${flipped} (MTB)` : flipped;
 }
 
 function validateSets(sets) {
@@ -406,6 +418,7 @@ async function fetchCloudState() {
         jun: asNumber(row.jun, 0),
         jul: asNumber(row.jul, 0),
         aug: asNumber(row.aug, 0),
+        withdrawn: Boolean(row.withdrawn || String(row.name || "").startsWith("W - ")),
       });
     }
 
@@ -571,6 +584,14 @@ export default function App() {
     if (String(mp) !== matchPos) setMatchPos(String(mp));
   }, [playerCount, matchPos]);
 
+  useEffect(() => {
+    const refreshDateIfBlank = () => {
+      if (!matchDate) setMatchDate(formatDateISO(new Date()));
+    };
+    window.addEventListener("focus", refreshDateIfBlank);
+    return () => window.removeEventListener("focus", refreshDateIfBlank);
+  }, [matchDate]);
+
   function scrollToRef(ref) {
     ref?.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -673,7 +694,10 @@ export default function App() {
     }));
   }
 
-  const visiblePlayers = useMemo(() => players.filter((p) => p.position >= 1 && p.position <= playerCount), [players, playerCount]);
+  const visiblePlayers = useMemo(
+    () => players.filter((p) => isWithdrawnPlayer(p) || (p.position >= 1 && p.position <= playerCount)),
+    [players, playerCount]
+  );
 
   const calculatedPlayers = useMemo(
     () =>
@@ -702,6 +726,7 @@ export default function App() {
     () =>
       players
         .filter((p) => p.position >= 1 && p.position <= playerCount)
+        .filter((p) => !isWithdrawnPlayer(p))
         .filter((p) => String(p.name || "").trim().length > 0)
         .sort((a, b) => a.position - b.position),
     [players, playerCount]
@@ -735,7 +760,7 @@ export default function App() {
   }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
 
   const leaderboardTop3 = useMemo(() => {
-    const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
+    const named = calculatedPlayers.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim().length > 0);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
   }, [calculatedPlayers]);
 
@@ -743,7 +768,7 @@ export default function App() {
     const byPid = new Map(players.map((p) => [p.pid, p]));
     const isActive = (pid) => {
       const p = byPid.get(pid);
-      return p ? p.position >= 1 && p.position <= playerCount : false;
+      return p ? !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount : false;
     };
 
     return [...matches]
@@ -1155,7 +1180,7 @@ export default function App() {
   }
 
   function isWithdrawnPlayer(p) {
-    return String(p?.name || "").startsWith("W - ");
+    return Boolean(p?.withdrawn) || String(p?.name || "").startsWith("W - ");
   }
 
   function isAdminDropMatch(match) {
@@ -1252,6 +1277,7 @@ export default function App() {
 
     const withdrawnTarget = {
       ...target,
+      withdrawn: true,
       name: isWithdrawnPlayer(target) ? target.name : `W - ${target.name || "Withdrawn player"}`,
     };
 
@@ -1362,7 +1388,7 @@ export default function App() {
     const message = `${player.name || "Player"} withdrawn and moved to the bottom of the ladder.`;
     const moved = movePlayerToBottom(current.players, player.pid).map((p) => {
       if (p.pid !== player.pid) return p;
-      return { ...p, name: withdrawnName };
+      return { ...p, withdrawn: true, name: withdrawnName };
     });
 
     const nextState = {
@@ -1473,7 +1499,8 @@ export default function App() {
           if (!p) return "Player results";
           const base = p.name?.trim() ? p.name : "Player";
           const inactive = p.position < 1 || p.position > playerCount;
-          return inactive ? `${base} (Inactive) — Results` : `${base} — Results`;
+          const withdrawn = isWithdrawnPlayer(p);
+          return withdrawn ? `${base} — Results` : inactive ? `${base} (Inactive) — Results` : `${base} — Results`;
         })()}
         onClose={() => {
           setPlayerModalOpen(false);
@@ -1497,7 +1524,7 @@ export default function App() {
 
           const pnameBase = players.find((x) => x.pid === pid)?.name || "(Unknown)";
           const pObj = players.find((x) => x.pid === pid);
-          const pname = pObj && (pObj.position < 1 || pObj.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
+          const pname = pObj && !isWithdrawnPlayer(pObj) && (pObj.position < 1 || pObj.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
 
           return (
             <div className="playerMatchList mobileSpacious">
@@ -1519,7 +1546,7 @@ export default function App() {
                           {m.ladderMoveApplied ? " • Ladder moved" : ""}
                         </div>
                       </div>
-                      <div className="mono playerMatchScore">{formatScore(m.score)}</div>
+                      <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
                     </div>
                   </div>
                 );
@@ -1579,7 +1606,7 @@ export default function App() {
               <div className="title">Heron Tennis Summer Ladder 2026</div>
               <div className="subtitle">
                 {divisionLabel} ladder • {playerCount} players • Cloud synced.
-                {cloudLoading ? " • Loading…" : ""}
+                {cloudLoading ? " • Loading…" : ""} • Build admin-visible-v5
               </div>
               {cloudError ? <div className="error">Cloud error: {cloudError}</div> : null}
               {!supabase ? <div className="error">Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY</div> : null}
