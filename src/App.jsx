@@ -508,6 +508,8 @@ export default function App() {
   const [dropPeriodKey, setDropPeriodKey] = useState("apr26_may31");
   const [selectedDropPids, setSelectedDropPids] = useState([]);
   const [withdrawPid, setWithdrawPid] = useState("");
+  const [manualMovePid, setManualMovePid] = useState("");
+  const [manualMovePosition, setManualMovePosition] = useState("1");
 
   const [matchAddedOpen, setMatchAddedOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -577,6 +579,7 @@ export default function App() {
 
   useEffect(() => {
     setWinner("p2");
+    setMatchDate(formatDateISO(new Date()));
     setMatchPos("1");
     setChallengerPid("");
     setScore("");
@@ -666,6 +669,12 @@ export default function App() {
         await actuallyWithdrawPlayer(pin);
         return;
       }
+
+      if (pinPurpose === "manualMove") {
+        closePin();
+        await actuallyManualMovePlayer(pin);
+        return;
+      }
     } catch (e) {
       setPinError(String(e?.message || e || "PIN action failed"));
     }
@@ -726,6 +735,30 @@ export default function App() {
         .sort((a, b) => a.position - b.position),
     [players, playerCount]
   );
+
+  const manualMovePlayers = useMemo(
+    () =>
+      players
+        .filter((p) => p.position >= 1 && p.position <= playerCount)
+        .filter((p) => String(p.name || "").trim().length > 0)
+        .filter((p) => !isWithdrawnPlayer(p))
+        .sort((a, b) => a.position - b.position),
+    [players, playerCount]
+  );
+
+  const manualMovePositions = useMemo(
+    () => manualMovePlayers.map((_, i) => i + 1),
+    [manualMovePlayers]
+  );
+
+  useEffect(() => {
+    if (!manualMovePlayers.some((p) => p.pid === manualMovePid)) {
+      setManualMovePid("");
+    }
+    const maxPos = Math.max(1, manualMovePositions.length || 1);
+    const safePos = clamp(asNumber(manualMovePosition, 1), 1, maxPos);
+    if (String(safePos) !== String(manualMovePosition)) setManualMovePosition(String(safePos));
+  }, [manualMovePlayers, manualMovePid, manualMovePosition, manualMovePositions.length]);
 
   const selectedDropPeriod = useMemo(
     () => DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0],
@@ -917,6 +950,7 @@ export default function App() {
       setDirty(false);
       setMatchAddedOpen(true);
       setScore("");
+      setMatchDate(formatDateISO(new Date()));
     } catch (e) {
       setError(String(e?.message || e || "Failed to save to cloud."));
     }
@@ -1433,6 +1467,8 @@ export default function App() {
       ? "Admin PIN required to drop player"
       : pinPurpose === "withdraw"
       ? "Admin PIN required to withdraw player"
+      : pinPurpose === "manualMove"
+      ? "Admin PIN required to move player"
       : "Admin PIN required to save changes";
 
   const pinHint =
@@ -1448,6 +1484,8 @@ export default function App() {
       ? "PIN required to move this player down 3 places."
       : pinPurpose === "withdraw"
       ? "PIN required to withdraw this player."
+      : pinPurpose === "manualMove"
+      ? "PIN required to quietly move this player without adding a log entry."
       : "PIN required to push your changes to the cloud.";
 
   const opponentLabel = useMemo(() => {
@@ -1824,6 +1862,32 @@ export default function App() {
                 </select>
                 <button className="btnDanger fullWidthOnMobile" disabled={locked || !withdrawPid} onClick={() => openPin("withdraw")}>
                   Withdraw
+                </button>
+              </div>
+
+              <div className="managementBox">
+                <div className="cardTitle">Quiet manual move</div>
+                <div className="hint">Repair the ladder order without adding anything to Matches / Actions / Logs.</div>
+                <select className="textInput tallOnMobile" value={manualMovePid} onChange={(e) => setManualMovePid(e.target.value)} disabled={locked}>
+                  <option value="">Select player…</option>
+                  {manualMovePlayers.map((p) => (
+                    <option key={p.pid} value={p.pid}>
+                      #{p.position} — {p.name}
+                    </option>
+                  ))}
+                </select>
+                <select className="textInput tallOnMobile" value={manualMovePosition} onChange={(e) => setManualMovePosition(e.target.value)} disabled={locked || !manualMovePid}>
+                  {manualMovePositions.map((pos) => {
+                    const occupant = manualMovePlayers.find((p) => p.position === pos);
+                    return (
+                      <option key={pos} value={String(pos)}>
+                        Move to #{pos}{occupant?.name ? ` (${occupant.name})` : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+                <button className="btn fullWidthOnMobile" disabled={locked || !manualMovePid} onClick={() => openPin("manualMove")}>
+                  Move player
                 </button>
               </div>
             </div>
