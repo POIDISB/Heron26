@@ -1780,10 +1780,12 @@ export default function App() {
                           <td>{String(m.score || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
                           <td className="mono">{String(m.score || "").startsWith("ADMIN:") ? String(m.score).replace("ADMIN: ", "") : formatScore(m.score)}</td>
                           <td style={{ textAlign: "right" }}>
-                            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-                              <button className="btnGhost" disabled={locked} onClick={() => openEditMatch(m)}>Edit</button>
-                              <button className="btnDanger" disabled={locked} onClick={() => requestDeleteMatch(m.id)}>Delete</button>
-                            </div>
+                            {!locked ? (
+                              <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+                                <button className="btnGhost" onClick={() => openEditMatch(m)}>Edit</button>
+                                <button className="btnDanger" onClick={() => requestDeleteMatch(m.id)}>Delete</button>
+                              </div>
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -1793,11 +1795,13 @@ export default function App() {
               )}
             </div>
 
-            <div className="sep" />
+            {!locked ? (
+              <>
+                <div className="sep" />
 
-            <div className="managementGrid">
-              <div className="managementBox">
-                <div className="cardTitle">Drop 3 places</div>
+                <div className="managementGrid">
+                  <div className="managementBox">
+                    <div className="cardTitle">Drop 3 places</div>
                 <div className="hint">Choose a period, review players with no matches in that window, then drop them in one batch.</div>
                 <select className="textInput tallOnMobile" value={dropPeriodKey} onChange={(e) => setDropPeriodKey(e.target.value)} disabled={locked}>
                   {DROP_PERIODS.map((period) => (
@@ -1900,19 +1904,21 @@ export default function App() {
             </div>
 
             <div className="sep" />
-            <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
-            <div className="mobileOnly collapsibleWrap">
-              <button className="collapseBtn" onClick={() => setMobileSettingsOpen((v) => !v)}>
-                {mobileSettingsOpen ? "Hide player count" : "Show player count"}
-              </button>
-            </div>
-            <div className={mobileSettingsOpen ? "sectionOpen" : "sectionClosedMobileOnly"}>
-              <div style={{ maxWidth: 320 }}>
-                <div className="label">How many players are in the {divisionLabel} ladder?</div>
-                <input className="textInput tallOnMobile" type="number" min={2} max={CAPACITY} value={playerCount} disabled={locked} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
-                <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
-              </div>
-            </div>
+                <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
+                <div className="mobileOnly collapsibleWrap">
+                  <button className="collapseBtn" onClick={() => setMobileSettingsOpen((v) => !v)}>
+                    {mobileSettingsOpen ? "Hide player count" : "Show player count"}
+                  </button>
+                </div>
+                <div className={mobileSettingsOpen ? "sectionOpen" : "sectionClosedMobileOnly"}>
+                  <div style={{ maxWidth: 320 }}>
+                    <div className="label">How many players are in the {divisionLabel} ladder?</div>
+                    <input className="textInput tallOnMobile" type="number" min={2} max={CAPACITY} value={playerCount} disabled={locked} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
+                    <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
