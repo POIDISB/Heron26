@@ -86,7 +86,6 @@ function createEmptyPlayer(position, division) {
     jun: 0,
     jul: 0,
     aug: 0,
-    withdrawn: false,
   };
 }
 
@@ -147,26 +146,6 @@ function formatScore(score) {
   if (String(score || "").startsWith("ADMIN:")) return String(score || "");
   const parsed = parseScore(score);
   return parsed.isMTB ? `${score} (MTB)` : score;
-}
-
-function flipScorePerspective(score) {
-  const raw = String(score || "").trim();
-  if (!raw || raw.startsWith("ADMIN:")) return raw;
-  const matches = raw.match(/\d+\s*[-:]\s*\d+/g) || [];
-  if (matches.length === 0) return raw;
-  return matches
-    .map((part) => {
-      const bits = part.split(/[-:]/);
-      if (bits.length !== 2) return part;
-      return `${bits[1].trim()}-${bits[0].trim()}`;
-    })
-    .join(" ");
-}
-
-function formatScoreForPlayer(score, playerIsChallenger) {
-  if (String(score || "").startsWith("ADMIN:")) return String(score || "");
-  const scoreFromPlayerView = playerIsChallenger ? String(score || "") : flipScorePerspective(score);
-  return formatScore(scoreFromPlayerView);
 }
 
 function validateSets(sets) {
@@ -427,7 +406,6 @@ async function fetchCloudState() {
         jun: asNumber(row.jun, 0),
         jul: asNumber(row.jul, 0),
         aug: asNumber(row.aug, 0),
-        withdrawn: Boolean(row.withdrawn) || String(row.name || "").startsWith("W - "),
       });
     }
 
@@ -579,11 +557,13 @@ export default function App() {
 
   useEffect(() => {
     setWinner("p2");
-    setMatchDate(formatDateISO(new Date()));
     setMatchPos("1");
     setChallengerPid("");
     setScore("");
     setError("");
+    setMatchDate(formatDateISO(new Date()));
+    setManualMovePid("");
+    setManualMovePosition("1");
   }, [activeDivision]);
 
   useEffect(() => {
@@ -693,15 +673,7 @@ export default function App() {
     }));
   }
 
-  const visiblePlayers = useMemo(
-    () =>
-      players.filter((p) => {
-        const hasName = String(p.name || "").trim().length > 0;
-        const inActiveRange = p.position >= 1 && p.position <= playerCount;
-        return inActiveRange || (hasName && isWithdrawnPlayer(p));
-      }),
-    [players, playerCount]
-  );
+  const visiblePlayers = useMemo(() => players.filter((p) => p.position >= 1 && p.position <= playerCount), [players, playerCount]);
 
   const calculatedPlayers = useMemo(
     () =>
@@ -731,34 +703,9 @@ export default function App() {
       players
         .filter((p) => p.position >= 1 && p.position <= playerCount)
         .filter((p) => String(p.name || "").trim().length > 0)
-        .filter((p) => !isWithdrawnPlayer(p))
         .sort((a, b) => a.position - b.position),
     [players, playerCount]
   );
-
-  const manualMovePlayers = useMemo(
-    () =>
-      players
-        .filter((p) => p.position >= 1 && p.position <= playerCount)
-        .filter((p) => String(p.name || "").trim().length > 0)
-        .filter((p) => !isWithdrawnPlayer(p))
-        .sort((a, b) => a.position - b.position),
-    [players, playerCount]
-  );
-
-  const manualMovePositions = useMemo(
-    () => manualMovePlayers.map((_, i) => i + 1),
-    [manualMovePlayers]
-  );
-
-  useEffect(() => {
-    if (!manualMovePlayers.some((p) => p.pid === manualMovePid)) {
-      setManualMovePid("");
-    }
-    const maxPos = Math.max(1, manualMovePositions.length || 1);
-    const safePos = clamp(asNumber(manualMovePosition, 1), 1, maxPos);
-    if (String(safePos) !== String(manualMovePosition)) setManualMovePosition(String(safePos));
-  }, [manualMovePlayers, manualMovePid, manualMovePosition, manualMovePositions.length]);
 
   const selectedDropPeriod = useMemo(
     () => DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0],
@@ -788,7 +735,7 @@ export default function App() {
   }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
 
   const leaderboardTop3 = useMemo(() => {
-    const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0 && !isWithdrawnPlayer(p));
+    const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
   }, [calculatedPlayers]);
 
@@ -1208,7 +1155,7 @@ export default function App() {
   }
 
   function isWithdrawnPlayer(p) {
-    return Boolean(p?.withdrawn) || String(p?.name || "").startsWith("W - ");
+    return String(p?.name || "").startsWith("W - ");
   }
 
   function isAdminDropMatch(match) {
@@ -1238,15 +1185,11 @@ export default function App() {
     if (!target || isWithdrawnPlayer(target)) return sourcePlayers;
 
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
+      .filter((p) => !isWithdrawnPlayer(p))
       .sort((a, b) => a.position - b.position);
 
     const withdrawn = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p))
-      .sort((a, b) => a.position - b.position);
-
-    const reserve = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && (p.position < 1 || p.position > playerCount))
       .sort((a, b) => a.position - b.position);
 
     const currentIndex = active.findIndex((p) => p.pid === pid);
@@ -1258,9 +1201,8 @@ export default function App() {
     reorderedActive.splice(safeTargetIndex, 0, movedPlayer);
 
     return [
-      ...reorderedActive.map((p, i) => ({ ...p, withdrawn: false, position: i + 1 })),
-      ...withdrawn.map((p, i) => ({ ...p, withdrawn: true, position: reorderedActive.length + i + 1 })),
-      ...reserve.map((p, i) => ({ ...p, withdrawn: false, position: reorderedActive.length + withdrawn.length + i + 1 })),
+      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
     ];
   }
 
@@ -1271,15 +1213,11 @@ export default function App() {
     // Withdrawn players are anchored to the bottom. Active players can only
     // be dropped within the active section, never below withdrawn players.
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
+      .filter((p) => !isWithdrawnPlayer(p))
       .sort((a, b) => a.position - b.position);
 
     const withdrawn = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p))
-      .sort((a, b) => a.position - b.position);
-
-    const reserve = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && (p.position < 1 || p.position > playerCount))
       .sort((a, b) => a.position - b.position);
 
     const currentIndex = active.findIndex((p) => p.pid === pid);
@@ -1293,9 +1231,8 @@ export default function App() {
     reorderedActive.splice(newIndex, 0, movedPlayer);
 
     return [
-      ...reorderedActive.map((p, i) => ({ ...p, withdrawn: false, position: i + 1 })),
-      ...withdrawn.map((p, i) => ({ ...p, withdrawn: true, position: reorderedActive.length + i + 1 })),
-      ...reserve.map((p, i) => ({ ...p, withdrawn: false, position: reorderedActive.length + withdrawn.length + i + 1 })),
+      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
     ];
   }
 
@@ -1306,28 +1243,22 @@ export default function App() {
     // Withdraw means bottom of the whole ladder, below all active players.
     // Existing withdrawn players remain grouped at the bottom too.
     const activeWithoutTarget = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid && p.position >= 1 && p.position <= playerCount)
+      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid)
       .sort((a, b) => a.position - b.position);
 
     const withdrawnWithoutTarget = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p) && p.pid !== pid)
       .sort((a, b) => a.position - b.position);
 
-    const reserve = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid && (p.position < 1 || p.position > playerCount))
-      .sort((a, b) => a.position - b.position);
-
     const withdrawnTarget = {
       ...target,
-      withdrawn: true,
       name: isWithdrawnPlayer(target) ? target.name : `W - ${target.name || "Withdrawn player"}`,
     };
 
     const rebuilt = [
-      ...activeWithoutTarget.map((p) => ({ ...p, withdrawn: false })),
+      ...activeWithoutTarget,
       withdrawnTarget,
-      ...withdrawnWithoutTarget.map((p) => ({ ...p, withdrawn: true })),
-      ...reserve.map((p) => ({ ...p, withdrawn: false })),
+      ...withdrawnWithoutTarget,
     ];
 
     return rebuilt.map((p, i) => ({ ...p, position: i + 1 }));
@@ -1431,7 +1362,7 @@ export default function App() {
     const message = `${player.name || "Player"} withdrawn and moved to the bottom of the ladder.`;
     const moved = movePlayerToBottom(current.players, player.pid).map((p) => {
       if (p.pid !== player.pid) return p;
-      return { ...p, withdrawn: true, name: withdrawnName };
+      return { ...p, name: withdrawnName };
     });
 
     const nextState = {
@@ -1454,6 +1385,39 @@ export default function App() {
     }
   }
 
+  async function actuallyManualMovePlayer(pin) {
+    setError("");
+    if (locked) return setError("Locked: Admin unlock required.");
+
+    const player = players.find((p) => p.pid === manualMovePid);
+    if (!player) return setError("Choose a player to move.");
+    if (isWithdrawnPlayer(player)) return setError("Withdrawn players are anchored at the bottom and can't be manually moved here.");
+
+    const activeCount = current.players.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim().length > 0).length;
+    const targetPosition = clamp(asNumber(manualMovePosition, 1), 1, Math.max(1, activeCount));
+    const moved = moveActivePlayerToPosition(current.players, player.pid, targetPosition);
+
+    const nextState = {
+      ...state,
+      [activeDivision]: {
+        ...current,
+        players: moved,
+      },
+    };
+
+    setState(nextState);
+    setDirty(true);
+
+    try {
+      await saveCloudState(pin, nextState);
+      setDirty(false);
+      setManualMovePid("");
+      setManualMovePosition("1");
+    } catch (e) {
+      setError(String(e?.message || e || "Failed to save quiet manual move to cloud."));
+    }
+  }
+
   const pinTitle =
     pinPurpose === "unlock"
       ? "Admin unlock"
@@ -1468,7 +1432,7 @@ export default function App() {
       : pinPurpose === "withdraw"
       ? "Admin PIN required to withdraw player"
       : pinPurpose === "manualMove"
-      ? "Admin PIN required to move player"
+      ? "Admin PIN required for quiet manual move"
       : "Admin PIN required to save changes";
 
   const pinHint =
@@ -1485,7 +1449,7 @@ export default function App() {
       : pinPurpose === "withdraw"
       ? "PIN required to withdraw this player."
       : pinPurpose === "manualMove"
-      ? "PIN required to quietly move this player without adding a log entry."
+      ? "PIN required to move this player without adding a log entry."
       : "PIN required to push your changes to the cloud.";
 
   const opponentLabel = useMemo(() => {
@@ -1555,7 +1519,7 @@ export default function App() {
                           {m.ladderMoveApplied ? " • Ladder moved" : ""}
                         </div>
                       </div>
-                      <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
+                      <div className="mono playerMatchScore">{formatScore(m.score)}</div>
                     </div>
                   </div>
                 );
@@ -1766,7 +1730,7 @@ export default function App() {
                   <table className="table">
                     <thead>
                       <tr>
-                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th><th style={{ textAlign: "right" }}>Actions</th>
+                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th>{!locked ? <th style={{ textAlign: "right" }}>Actions</th> : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -1779,14 +1743,14 @@ export default function App() {
                           <td>{m.surface || "—"}</td>
                           <td>{String(m.score || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
                           <td className="mono">{String(m.score || "").startsWith("ADMIN:") ? String(m.score).replace("ADMIN: ", "") : formatScore(m.score)}</td>
-                          <td style={{ textAlign: "right" }}>
-                            {!locked ? (
+                          {!locked ? (
+                            <td style={{ textAlign: "right" }}>
                               <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
                                 <button className="btnGhost" onClick={() => openEditMatch(m)}>Edit</button>
                                 <button className="btnDanger" onClick={() => requestDeleteMatch(m.id)}>Delete</button>
                               </div>
-                            ) : null}
-                          </td>
+                            </td>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>
@@ -1799,111 +1763,108 @@ export default function App() {
               <>
                 <div className="sep" />
 
+                <div className="managementBox manualMoveBox">
+                  <div className="cardTitle">Quiet manual move</div>
+                  <div className="hint">Move a player directly to a chosen active position. This is PIN-protected and does not add anything to Matches / Actions / Logs.</div>
+                  <div className="formGrid mobileSingle" style={{ gridTemplateColumns: "1fr 1fr auto", alignItems: "end" }}>
+                    <div>
+                      <div className="label">Player to move</div>
+                      <select className="textInput tallOnMobile" value={manualMovePid} onChange={(e) => setManualMovePid(e.target.value)}>
+                        <option value="">Select player…</option>
+                        {selectablePlayers.filter((p) => !isWithdrawnPlayer(p)).map((p) => (
+                          <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <div className="label">Move to position</div>
+                      <select className="textInput tallOnMobile" value={manualMovePosition} onChange={(e) => setManualMovePosition(e.target.value)}>
+                        {Array.from({ length: Math.max(1, players.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim().length > 0).length) }, (_, i) => i + 1).map((pos) => {
+                          const occupant = players.find((p) => !isWithdrawnPlayer(p) && p.position === pos);
+                          const label = occupant?.name?.trim() ? `#${pos} (${occupant.name})` : `#${pos}`;
+                          return <option key={pos} value={String(pos)}>{label}</option>;
+                        })}
+                      </select>
+                    </div>
+                    <button className="btn fullWidthOnMobile" disabled={!manualMovePid} onClick={() => openPin("manualMove")}>
+                      Quietly move player
+                    </button>
+                  </div>
+                </div>
+
+                <div className="sep" />
+
                 <div className="managementGrid">
                   <div className="managementBox">
                     <div className="cardTitle">Drop 3 places</div>
-                <div className="hint">Choose a period, review players with no matches in that window, then drop them in one batch.</div>
-                <select className="textInput tallOnMobile" value={dropPeriodKey} onChange={(e) => setDropPeriodKey(e.target.value)} disabled={locked}>
-                  {DROP_PERIODS.map((period) => (
-                    <option key={period.key} value={period.key}>{period.label}</option>
-                  ))}
-                </select>
+                    <div className="hint">Choose a period, review players with no matches in that window, then drop them in one batch.</div>
+                    <select className="textInput tallOnMobile" value={dropPeriodKey} onChange={(e) => setDropPeriodKey(e.target.value)}>
+                      {DROP_PERIODS.map((period) => (
+                        <option key={period.key} value={period.key}>{period.label}</option>
+                      ))}
+                    </select>
 
-                <div className="batchList">
-                  {eligibleDropPlayers.length === 0 ? (
-                    <div className="hint">Everyone has played in this period, or there are no eligible active players.</div>
-                  ) : (
-                    eligibleDropPlayers.map((p) => (
-                      <label key={p.pid} className="batchCheck">
-                        <input
-                          type="checkbox"
-                          checked={selectedDropPids.includes(p.pid)}
-                          onChange={(e) => {
-                            setSelectedDropPids((prev) =>
-                              e.target.checked ? [...prev, p.pid] : prev.filter((id) => id !== p.pid)
-                            );
-                          }}
-                          disabled={locked}
-                        />
-                        <span>#{p.position} — {p.name}</span>
-                      </label>
-                    ))
-                  )}
-                </div>
+                    <div className="batchList">
+                      {eligibleDropPlayers.length === 0 ? (
+                        <div className="hint">Everyone has played in this period, or there are no eligible active players.</div>
+                      ) : (
+                        eligibleDropPlayers.map((p) => (
+                          <label key={p.pid} className="batchCheck">
+                            <input
+                              type="checkbox"
+                              checked={selectedDropPids.includes(p.pid)}
+                              onChange={(e) => {
+                                setSelectedDropPids((prev) =>
+                                  e.target.checked ? [...prev, p.pid] : prev.filter((id) => id !== p.pid)
+                                );
+                              }}
+                            />
+                            <span>#{p.position} — {p.name}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
 
-                <div className="row" style={{ gap: 8 }}>
-                  <button
-                    className="btnGhost"
-                    disabled={locked || eligibleDropPlayers.length === 0}
-                    onClick={() => setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid))}
-                  >
-                    Select all
-                  </button>
-                  <button
-                    className="btnGhost"
-                    disabled={locked || selectedDropPids.length === 0}
-                    onClick={() => setSelectedDropPids([])}
-                  >
-                    Clear
-                  </button>
-                </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <button
+                        className="btnGhost"
+                        disabled={eligibleDropPlayers.length === 0}
+                        onClick={() => setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid))}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        className="btnGhost"
+                        disabled={selectedDropPids.length === 0}
+                        onClick={() => setSelectedDropPids([])}
+                      >
+                        Clear
+                      </button>
+                    </div>
 
-                <button className="btn fullWidthOnMobile" disabled={locked || selectedDropPids.length === 0} onClick={() => openPin("drop3")}>
-                  Drop {selectedDropPids.length} selected player{selectedDropPids.length === 1 ? "" : "s"} 3 places
-                </button>
-              </div>
+                    <button className="btn fullWidthOnMobile" disabled={selectedDropPids.length === 0} onClick={() => openPin("drop3")}>
+                      Drop {selectedDropPids.length} selected player{selectedDropPids.length === 1 ? "" : "s"} 3 places
+                    </button>
+                  </div>
 
-              <div className="managementBox">
-                <div className="cardTitle">Withdraw player</div>
-                <div className="hint">Move a player to the bottom, mark them with W, and grey out the row.</div>
-                <select className="textInput tallOnMobile" value={withdrawPid} onChange={(e) => setWithdrawPid(e.target.value)} disabled={locked}>
-                  <option value="">Select player…</option>
-                  {selectablePlayers.map((p) => (
-                    <option key={p.pid} value={p.pid}>
-                      #{p.position} — {p.name}
-                    </option>
-                  ))}
-                </select>
-                <button className="btnDanger fullWidthOnMobile" disabled={locked || !withdrawPid} onClick={() => openPin("withdraw")}>
-                  Withdraw
-                </button>
-              </div>
-            </div>
-
-            <div className="sep" />
-            <div className="managementBox manualMoveBox">
-              <div className="cardTitle">Quiet manual move</div>
-              <div className="hint">Repair the ladder order without adding anything to Matches / Actions / Logs.</div>
-              <div className="manualMoveGrid">
-                <div>
-                  <div className="label">Player to move</div>
-                  <select className="textInput tallOnMobile" value={manualMovePid} onChange={(e) => setManualMovePid(e.target.value)} disabled={locked}>
-                    <option value="">Select player…</option>
-                    {manualMovePlayers.map((p) => (
-                      <option key={p.pid} value={p.pid}>
-                        #{p.position} — {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <div className="label">Move to position</div>
-                  <select className="textInput tallOnMobile" value={manualMovePosition} onChange={(e) => setManualMovePosition(e.target.value)} disabled={locked || !manualMovePid}>
-                    {manualMovePositions.map((pos) => {
-                      const occupant = manualMovePlayers.find((p) => p.position === pos);
-                      return (
-                        <option key={pos} value={String(pos)}>
-                          #{pos}{occupant?.name ? ` (${occupant.name})` : ""}
+                  <div className="managementBox">
+                    <div className="cardTitle">Withdraw player</div>
+                    <div className="hint">Move a player to the bottom, mark them with W, and grey out the row.</div>
+                    <select className="textInput tallOnMobile" value={withdrawPid} onChange={(e) => setWithdrawPid(e.target.value)}>
+                      <option value="">Select player…</option>
+                      {selectablePlayers.map((p) => (
+                        <option key={p.pid} value={p.pid}>
+                          #{p.position} — {p.name}
                         </option>
-                      );
-                    })}
-                  </select>
+                      ))}
+                    </select>
+                    <button className="btnDanger fullWidthOnMobile" disabled={!withdrawPid} onClick={() => openPin("withdraw")}>
+                      Withdraw
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <button className="btn fullWidthOnMobile" disabled={locked || !manualMovePid} onClick={() => openPin("manualMove")}>Quietly move player</button>
-            </div>
 
-            <div className="sep" />
+                <div className="sep" />
                 <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
                 <div className="mobileOnly collapsibleWrap">
                   <button className="collapseBtn" onClick={() => setMobileSettingsOpen((v) => !v)}>
@@ -1913,7 +1874,7 @@ export default function App() {
                 <div className={mobileSettingsOpen ? "sectionOpen" : "sectionClosedMobileOnly"}>
                   <div style={{ maxWidth: 320 }}>
                     <div className="label">How many players are in the {divisionLabel} ladder?</div>
-                    <input className="textInput tallOnMobile" type="number" min={2} max={CAPACITY} value={playerCount} disabled={locked} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
+                    <input className="textInput tallOnMobile" type="number" min={2} max={CAPACITY} value={playerCount} onChange={(e) => { const next = clamp(asNumber(e.target.value, DEFAULT_PLAYER_COUNT), 2, CAPACITY); setDirty(true); patchCurrentDivision((divisionState) => ({ ...divisionState, playerCount: next })); }} />
                     <div className="hint">Min 2, max {CAPACITY}. (Default: {DEFAULT_PLAYER_COUNT})</div>
                   </div>
                 </div>
@@ -2086,17 +2047,6 @@ const css = `
   .withdrawnRow .nameBtn {
     color: rgba(255,255,255,0.62);
     border-color: rgba(255,255,255,0.05);
-  }
-
-  .manualMoveGrid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .manualMoveBox {
-    border-color: rgba(110, 231, 183, 0.25);
-    background: rgba(110, 231, 183, 0.055);
   }
 
   .tableWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }
@@ -2320,7 +2270,6 @@ const css = `
     .numText, .numInput { width: 56px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
     .managementGrid { grid-template-columns: 1fr; }
-    .manualMoveGrid { grid-template-columns: 1fr; }
     .mobileToolbarWrap { padding-top: 10px; }
     .stackedMobile { flex-direction: column; align-items: flex-start; }
     .roomy { padding: 14px; }
