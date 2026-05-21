@@ -17,8 +17,8 @@ const DEFAULT_PLAYER_COUNT = 40;
 const CAPACITY = 60;
 const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"];
 const DIVISIONS = [
-  { key: "mens", label: "Men's" },
-  { key: "womens", label: "Women's" },
+  { key: "mens", label: "Men" },
+  { key: "womens", label: "Women" },
 ];
 
 const DROP_PERIODS = [
