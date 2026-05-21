@@ -1864,32 +1864,39 @@ export default function App() {
                   Withdraw
                 </button>
               </div>
+            </div>
 
-              <div className="managementBox">
-                <div className="cardTitle">Quiet manual move</div>
-                <div className="hint">Repair the ladder order without adding anything to Matches / Actions / Logs.</div>
-                <select className="textInput tallOnMobile" value={manualMovePid} onChange={(e) => setManualMovePid(e.target.value)} disabled={locked}>
-                  <option value="">Select player…</option>
-                  {manualMovePlayers.map((p) => (
-                    <option key={p.pid} value={p.pid}>
-                      #{p.position} — {p.name}
-                    </option>
-                  ))}
-                </select>
-                <select className="textInput tallOnMobile" value={manualMovePosition} onChange={(e) => setManualMovePosition(e.target.value)} disabled={locked || !manualMovePid}>
-                  {manualMovePositions.map((pos) => {
-                    const occupant = manualMovePlayers.find((p) => p.position === pos);
-                    return (
-                      <option key={pos} value={String(pos)}>
-                        Move to #{pos}{occupant?.name ? ` (${occupant.name})` : ""}
+            <div className="sep" />
+            <div className="managementBox manualMoveBox">
+              <div className="cardTitle">Quiet manual move</div>
+              <div className="hint">Repair the ladder order without adding anything to Matches / Actions / Logs.</div>
+              <div className="manualMoveGrid">
+                <div>
+                  <div className="label">Player to move</div>
+                  <select className="textInput tallOnMobile" value={manualMovePid} onChange={(e) => setManualMovePid(e.target.value)} disabled={locked}>
+                    <option value="">Select player…</option>
+                    {manualMovePlayers.map((p) => (
+                      <option key={p.pid} value={p.pid}>
+                        #{p.position} — {p.name}
                       </option>
-                    );
-                  })}
-                </select>
-                <button className="btn fullWidthOnMobile" disabled={locked || !manualMovePid} onClick={() => openPin("manualMove")}>
-                  Move player
-                </button>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div className="label">Move to position</div>
+                  <select className="textInput tallOnMobile" value={manualMovePosition} onChange={(e) => setManualMovePosition(e.target.value)} disabled={locked || !manualMovePid}>
+                    {manualMovePositions.map((pos) => {
+                      const occupant = manualMovePlayers.find((p) => p.position === pos);
+                      return (
+                        <option key={pos} value={String(pos)}>
+                          #{pos}{occupant?.name ? ` (${occupant.name})` : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
               </div>
+              <button className="btn fullWidthOnMobile" disabled={locked || !manualMovePid} onClick={() => openPin("manualMove")}>Quietly move player</button>
             </div>
 
             <div className="sep" />
@@ -2073,6 +2080,17 @@ const css = `
   .withdrawnRow .nameBtn {
     color: rgba(255,255,255,0.62);
     border-color: rgba(255,255,255,0.05);
+  }
+
+  .manualMoveGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .manualMoveBox {
+    border-color: rgba(110, 231, 183, 0.25);
+    background: rgba(110, 231, 183, 0.055);
   }
 
   .tableWrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }
@@ -2296,6 +2314,7 @@ const css = `
     .numText, .numInput { width: 56px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
     .managementGrid { grid-template-columns: 1fr; }
+    .manualMoveGrid { grid-template-columns: 1fr; }
     .mobileToolbarWrap { padding-top: 10px; }
     .stackedMobile { flex-direction: column; align-items: flex-start; }
     .roomy { padding: 14px; }
