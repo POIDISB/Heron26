@@ -86,6 +86,7 @@ function createEmptyPlayer(position, division) {
     jun: 0,
     jul: 0,
     aug: 0,
+    withdrawn: false,
   };
 }
 
@@ -146,6 +147,26 @@ function formatScore(score) {
   if (String(score || "").startsWith("ADMIN:")) return String(score || "");
   const parsed = parseScore(score);
   return parsed.isMTB ? `${score} (MTB)` : score;
+}
+
+function flipScorePerspective(score) {
+  const raw = String(score || "").trim();
+  if (!raw || raw.startsWith("ADMIN:")) return raw;
+  const matches = raw.match(/\d+\s*[-:]\s*\d+/g) || [];
+  if (matches.length === 0) return raw;
+  return matches
+    .map((part) => {
+      const bits = part.split(/[-:]/);
+      if (bits.length !== 2) return part;
+      return `${bits[1].trim()}-${bits[0].trim()}`;
+    })
+    .join(" ");
+}
+
+function formatScoreForPlayer(score, playerIsChallenger) {
+  if (String(score || "").startsWith("ADMIN:")) return String(score || "");
+  const scoreFromPlayerView = playerIsChallenger ? String(score || "") : flipScorePerspective(score);
+  return formatScore(scoreFromPlayerView);
 }
 
 function validateSets(sets) {
@@ -406,6 +427,7 @@ async function fetchCloudState() {
         jun: asNumber(row.jun, 0),
         jul: asNumber(row.jul, 0),
         aug: asNumber(row.aug, 0),
+        withdrawn: Boolean(row.withdrawn) || String(row.name || "").startsWith("W - "),
       });
     }
 
@@ -662,7 +684,15 @@ export default function App() {
     }));
   }
 
-  const visiblePlayers = useMemo(() => players.filter((p) => p.position >= 1 && p.position <= playerCount), [players, playerCount]);
+  const visiblePlayers = useMemo(
+    () =>
+      players.filter((p) => {
+        const hasName = String(p.name || "").trim().length > 0;
+        const inActiveRange = p.position >= 1 && p.position <= playerCount;
+        return inActiveRange || (hasName && isWithdrawnPlayer(p));
+      }),
+    [players, playerCount]
+  );
 
   const calculatedPlayers = useMemo(
     () =>
@@ -692,6 +722,7 @@ export default function App() {
       players
         .filter((p) => p.position >= 1 && p.position <= playerCount)
         .filter((p) => String(p.name || "").trim().length > 0)
+        .filter((p) => !isWithdrawnPlayer(p))
         .sort((a, b) => a.position - b.position),
     [players, playerCount]
   );
@@ -724,7 +755,7 @@ export default function App() {
   }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
 
   const leaderboardTop3 = useMemo(() => {
-    const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0);
+    const named = calculatedPlayers.filter((p) => String(p.name || "").trim().length > 0 && !isWithdrawnPlayer(p));
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
   }, [calculatedPlayers]);
 
@@ -1143,7 +1174,7 @@ export default function App() {
   }
 
   function isWithdrawnPlayer(p) {
-    return String(p?.name || "").startsWith("W - ");
+    return Boolean(p?.withdrawn) || String(p?.name || "").startsWith("W - ");
   }
 
   function isAdminDropMatch(match) {
@@ -1173,11 +1204,15 @@ export default function App() {
     if (!target || isWithdrawnPlayer(target)) return sourcePlayers;
 
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p))
+      .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
       .sort((a, b) => a.position - b.position);
 
     const withdrawn = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const reserve = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p) && (p.position < 1 || p.position > playerCount))
       .sort((a, b) => a.position - b.position);
 
     const currentIndex = active.findIndex((p) => p.pid === pid);
@@ -1189,8 +1224,9 @@ export default function App() {
     reorderedActive.splice(safeTargetIndex, 0, movedPlayer);
 
     return [
-      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
-      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
+      ...reorderedActive.map((p, i) => ({ ...p, withdrawn: false, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, withdrawn: true, position: reorderedActive.length + i + 1 })),
+      ...reserve.map((p, i) => ({ ...p, withdrawn: false, position: reorderedActive.length + withdrawn.length + i + 1 })),
     ];
   }
 
@@ -1201,11 +1237,15 @@ export default function App() {
     // Withdrawn players are anchored to the bottom. Active players can only
     // be dropped within the active section, never below withdrawn players.
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p))
+      .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
       .sort((a, b) => a.position - b.position);
 
     const withdrawn = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p))
+      .sort((a, b) => a.position - b.position);
+
+    const reserve = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p) && (p.position < 1 || p.position > playerCount))
       .sort((a, b) => a.position - b.position);
 
     const currentIndex = active.findIndex((p) => p.pid === pid);
@@ -1219,8 +1259,9 @@ export default function App() {
     reorderedActive.splice(newIndex, 0, movedPlayer);
 
     return [
-      ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
-      ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
+      ...reorderedActive.map((p, i) => ({ ...p, withdrawn: false, position: i + 1 })),
+      ...withdrawn.map((p, i) => ({ ...p, withdrawn: true, position: reorderedActive.length + i + 1 })),
+      ...reserve.map((p, i) => ({ ...p, withdrawn: false, position: reorderedActive.length + withdrawn.length + i + 1 })),
     ];
   }
 
@@ -1231,22 +1272,28 @@ export default function App() {
     // Withdraw means bottom of the whole ladder, below all active players.
     // Existing withdrawn players remain grouped at the bottom too.
     const activeWithoutTarget = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid)
+      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid && p.position >= 1 && p.position <= playerCount)
       .sort((a, b) => a.position - b.position);
 
     const withdrawnWithoutTarget = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p) && p.pid !== pid)
       .sort((a, b) => a.position - b.position);
 
+    const reserve = sourcePlayers
+      .filter((p) => !isWithdrawnPlayer(p) && p.pid !== pid && (p.position < 1 || p.position > playerCount))
+      .sort((a, b) => a.position - b.position);
+
     const withdrawnTarget = {
       ...target,
+      withdrawn: true,
       name: isWithdrawnPlayer(target) ? target.name : `W - ${target.name || "Withdrawn player"}`,
     };
 
     const rebuilt = [
-      ...activeWithoutTarget,
+      ...activeWithoutTarget.map((p) => ({ ...p, withdrawn: false })),
       withdrawnTarget,
-      ...withdrawnWithoutTarget,
+      ...withdrawnWithoutTarget.map((p) => ({ ...p, withdrawn: true })),
+      ...reserve.map((p) => ({ ...p, withdrawn: false })),
     ];
 
     return rebuilt.map((p, i) => ({ ...p, position: i + 1 }));
@@ -1350,7 +1397,7 @@ export default function App() {
     const message = `${player.name || "Player"} withdrawn and moved to the bottom of the ladder.`;
     const moved = movePlayerToBottom(current.players, player.pid).map((p) => {
       if (p.pid !== player.pid) return p;
-      return { ...p, name: withdrawnName };
+      return { ...p, withdrawn: true, name: withdrawnName };
     });
 
     const nextState = {
@@ -1470,7 +1517,7 @@ export default function App() {
                           {m.ladderMoveApplied ? " • Ladder moved" : ""}
                         </div>
                       </div>
-                      <div className="mono playerMatchScore">{formatScore(m.score)}</div>
+                      <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
                     </div>
                   </div>
                 );
