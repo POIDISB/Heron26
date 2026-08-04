@@ -536,6 +536,7 @@ export default function App() {
   const [nowTick, setNowTick] = useState(Date.now());
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [ladderView, setLadderView] = useState("live");
 
   const current = state[activeDivision];
   const { players, matches, playerCount } = current;
@@ -585,7 +586,6 @@ export default function App() {
   const pinRef = useRef(null);
 
   const liveRef = useRef(null);
-  const analyticsRef = useRef(null);
   const ladderRef = useRef(null);
   const addMatchRef = useRef(null);
   const historyRef = useRef(null);
@@ -1830,7 +1830,6 @@ export default function App() {
           <div className="mobileOnly cardBody mobileToolbarWrap">
             <div className="quickNav">
               <button className="quickNavBtn" onClick={() => scrollToRef(liveRef)}>Live ranking</button>
-              <button className="quickNavBtn" onClick={() => scrollToRef(analyticsRef)}>Analytics</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(ladderRef)}>Ladder</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(addMatchRef)}>Add match</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(historyRef)}>Match history</button>
@@ -1849,52 +1848,60 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card" style={{ marginBottom: 14 }} ref={analyticsRef}>
-          <div className="cardBody">
-            <AnalyticsPanel analytics={analytics} divisionLabel={divisionLabel} seasonLabel={seasonLabel} />
-          </div>
-        </div>
-
         <div className="card" ref={ladderRef}>
-          <div className="cardHeader"><div><div className="hint">Locked = nothing editable.</div></div></div>
-          <div className="cardBody">
-            <div className="mobileOnly swipeHint">Swipe sideways to view all stats →</div>
-            <div className="tableWrap mobileTableWrap">
-              <table className="table ladderTable">
-                <thead>
-                  <tr>
-                    {COLS.map((c) => <th key={c.key}><button className="thBtn" onClick={() => toggleSort(c.key)}>{c.label}{sortIndicator(c.key)}</button></th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayedPlayers.map((p) => (
-                    <tr key={p.pid} className={isWithdrawnPlayer(p) ? "withdrawnRow" : ""} style={ladderRowStyle(p.position)}>
-                      <td className="posCell">{isWithdrawnPlayer(p) ? "W" : p.position}</td>
-                      <td>
-                        {locked ? (
-                          <button type="button" className="nameBtn" style={latestResultStyle(p.pid)} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} title="Tap to view results">{p.name || "—"}</button>
-                        ) : (
-                          <input className="textInput" value={p.name} placeholder="Player name" onChange={(e) => updatePlayer(p.pid, "name", e.target.value)} />
-                        )}
-                      </td>
-                      <td><StatCell locked={locked} value={p.matchesPlayed} onChange={(v) => updatePlayer(p.pid, "matchesPlayed", v)} /></td>
-                      <td><StatCell locked={locked} value={p.matchesWon} onChange={(v) => updatePlayer(p.pid, "matchesWon", v)} /></td>
-                      <td><StatCell locked={locked} value={p.setsWon} onChange={(v) => updatePlayer(p.pid, "setsWon", v)} /></td>
-                      <td><StatCell locked={locked} value={p.setsLost} onChange={(v) => updatePlayer(p.pid, "setsLost", v)} /></td>
-                      <td className="diff">{p.setDiff}</td>
-                      <td><StatCell locked={locked} value={p.gamesWon} onChange={(v) => updatePlayer(p.pid, "gamesWon", v)} /></td>
-                      <td><StatCell locked={locked} value={p.gamesLost} onChange={(v) => updatePlayer(p.pid, "gamesLost", v)} /></td>
-                      <td className="diff">{p.gameDiff}</td>
-                      <td><StatCell locked={locked} value={p.apr} onChange={(v) => updatePlayer(p.pid, "apr", v)} /></td>
-                      <td><StatCell locked={locked} value={p.may} onChange={(v) => updatePlayer(p.pid, "may", v)} /></td>
-                      <td><StatCell locked={locked} value={p.jun} onChange={(v) => updatePlayer(p.pid, "jun", v)} /></td>
-                      <td><StatCell locked={locked} value={p.jul} onChange={(v) => updatePlayer(p.pid, "jul", v)} /></td>
-                      
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="cardHeader ladderViewHeader">
+            <div>
+              <div className="cardTitle">{ladderView === "live" ? "Live Table" : "Statistics and Analytics"}</div>
+              <div className="hint">{ladderView === "live" ? "Locked = nothing editable." : `${divisionLabel} • ${seasonLabel}`}</div>
             </div>
+            <div className="segControl ladderViewToggle" aria-label="Choose ladder view">
+              <button className={ladderView === "live" ? "segBtn active" : "segBtn"} onClick={() => setLadderView("live")}>Live Table</button>
+              <button className={ladderView === "analytics" ? "segBtn active" : "segBtn"} onClick={() => setLadderView("analytics")}>Statistics and Analytics</button>
+            </div>
+          </div>
+          <div className="cardBody">
+            {ladderView === "analytics" ? (
+              <AnalyticsPanel analytics={analytics} divisionLabel={divisionLabel} seasonLabel={seasonLabel} />
+            ) : (
+              <>
+                <div className="mobileOnly swipeHint">Swipe sideways to view all stats →</div>
+                <div className="tableWrap mobileTableWrap">
+                  <table className="table ladderTable">
+                    <thead>
+                      <tr>
+                        {COLS.map((c) => <th key={c.key}><button className="thBtn" onClick={() => toggleSort(c.key)}>{c.label}{sortIndicator(c.key)}</button></th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayedPlayers.map((p) => (
+                        <tr key={p.pid} className={isWithdrawnPlayer(p) ? "withdrawnRow" : ""} style={ladderRowStyle(p.position)}>
+                          <td className="posCell">{isWithdrawnPlayer(p) ? "W" : p.position}</td>
+                          <td>
+                            {locked ? (
+                              <button type="button" className="nameBtn" style={latestResultStyle(p.pid)} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} title="Tap to view results">{p.name || "—"}</button>
+                            ) : (
+                              <input className="textInput" value={p.name} placeholder="Player name" onChange={(e) => updatePlayer(p.pid, "name", e.target.value)} />
+                            )}
+                          </td>
+                          <td><StatCell locked={locked} value={p.matchesPlayed} onChange={(v) => updatePlayer(p.pid, "matchesPlayed", v)} /></td>
+                          <td><StatCell locked={locked} value={p.matchesWon} onChange={(v) => updatePlayer(p.pid, "matchesWon", v)} /></td>
+                          <td><StatCell locked={locked} value={p.setsWon} onChange={(v) => updatePlayer(p.pid, "setsWon", v)} /></td>
+                          <td><StatCell locked={locked} value={p.setsLost} onChange={(v) => updatePlayer(p.pid, "setsLost", v)} /></td>
+                          <td className="diff">{p.setDiff}</td>
+                          <td><StatCell locked={locked} value={p.gamesWon} onChange={(v) => updatePlayer(p.pid, "gamesWon", v)} /></td>
+                          <td><StatCell locked={locked} value={p.gamesLost} onChange={(v) => updatePlayer(p.pid, "gamesLost", v)} /></td>
+                          <td className="diff">{p.gameDiff}</td>
+                          <td><StatCell locked={locked} value={p.apr} onChange={(v) => updatePlayer(p.pid, "apr", v)} /></td>
+                          <td><StatCell locked={locked} value={p.may} onChange={(v) => updatePlayer(p.pid, "may", v)} /></td>
+                          <td><StatCell locked={locked} value={p.jun} onChange={(v) => updatePlayer(p.pid, "jun", v)} /></td>
+                          <td><StatCell locked={locked} value={p.jul} onChange={(v) => updatePlayer(p.pid, "jul", v)} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -2481,6 +2488,9 @@ const css = `
   .bottomBarBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 
+  .ladderViewHeader { gap: 14px; align-items: center; }
+  .ladderViewToggle { flex-shrink: 0; }
+  .ladderViewToggle .segBtn { min-width: 118px; }
   .analyticsPanel { display: grid; gap: 14px; }
   .analyticsHeading { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
   .analyticsBadge { border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 800; white-space: nowrap; }
@@ -2546,6 +2556,9 @@ const css = `
     .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
+    .ladderViewHeader { align-items: stretch; }
+    .ladderViewToggle { width: 100%; }
+    .ladderViewToggle .segBtn { flex: 1; min-width: 0; }
     .analyticsKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .analyticsGrid { grid-template-columns: 1fr; }
     .analyticsHeading { align-items: center; }
