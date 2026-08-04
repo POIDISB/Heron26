@@ -307,11 +307,11 @@ function ladderRowStyle(position) {
   return undefined;
 }
 
-function Modal({ open, title, children, actions, onClose, mobileFull = false }) {
+function Modal({ open, title, children, actions, onClose, mobileFull = false, className = "" }) {
   if (!open) return null;
   return (
     <div className="modalOverlay" role="dialog" aria-modal="true">
-      <div className={mobileFull ? "modalCard mobileFull" : "modalCard"}>
+      <div className={["modalCard", mobileFull ? "mobileFull" : "", className].filter(Boolean).join(" ")}>
         <div className="modalHeader">
           <div className="modalTitle">{title}</div>
           <button className="iconBtn" onClick={onClose} aria-label="Close">
@@ -1857,6 +1857,7 @@ export default function App() {
       <Modal
         open={playerModalOpen}
         mobileFull={true}
+        className="playerProfileModal"
         title={(() => {
           const p = players.find((x) => x.pid === playerModalPid);
           if (!p) return "Player results";
@@ -1884,10 +1885,50 @@ export default function App() {
             .filter((m) => m.challengerPid === pid || m.opponentPid === pid)
             .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
 
+          const currentMatches = list.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
+          const currentStats = (() => {
+            let wins = 0, successfulChallenges = 0, successfulDefences = 0, bestStreak = 0, streak = 0;
+            let setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0;
+            const surfaces = new Map();
+            const h2h = new Map();
+            const chronological = [...currentMatches].sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
+            for (const m of chronological) {
+              const isChallenger = m.challengerPid === pid;
+              const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
+              if (didWin) {
+                wins += 1; streak += 1; bestStreak = Math.max(bestStreak, streak);
+                if (isChallenger) successfulChallenges += 1; else successfulDefences += 1;
+              } else streak = 0;
+              const parsed = parseScore(m.score);
+              if (parsed.valid) {
+                const totals = computeFromSets(parsed.sets);
+                setsWon += isChallenger ? totals.p1Sets : totals.p2Sets;
+                setsLost += isChallenger ? totals.p2Sets : totals.p1Sets;
+                gamesWon += isChallenger ? totals.p1Games : totals.p2Games;
+                gamesLost += isChallenger ? totals.p2Games : totals.p1Games;
+              }
+              const surfaceName = String(m.surface || "Unknown");
+              const sr = surfaces.get(surfaceName) || { surface: surfaceName, played: 0, wins: 0 };
+              sr.played += 1; if (didWin) sr.wins += 1; surfaces.set(surfaceName, sr);
+              const opponentName = isChallenger ? m.p2Name : m.p1Name;
+              const key = String(opponentName || "Unknown").toLowerCase();
+              const hr = h2h.get(key) || { name: opponentName || "Unknown", played: 0, wins: 0 };
+              hr.played += 1; if (didWin) hr.wins += 1; h2h.set(key, hr);
+            }
+            const played = currentMatches.length;
+            return {
+              played, wins, losses: played - wins, winPct: played ? Math.round((wins / played) * 100) : 0,
+              successfulChallenges, successfulDefences, bestStreak, setsWon, setsLost, gamesWon, gamesLost,
+              surfaces: [...surfaces.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a,b) => b.played-a.played),
+              headToHead: [...h2h.values()].sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))
+            };
+          })();
+
           return (
             <div className="playerProfile">
               <div className="segControl playerProfileToggle" role="tablist" aria-label="Player profile view">
                 <button className={playerModalView === "recent" ? "segBtn active" : "segBtn"} onClick={() => setPlayerModalView("recent")}>Recent Matches</button>
+                <button className={playerModalView === "current" ? "segBtn active" : "segBtn"} onClick={() => setPlayerModalView("current")}>Current Season Stats</button>
                 <button className={playerModalView === "lifetime" ? "segBtn active" : "segBtn"} onClick={() => setPlayerModalView("lifetime")}>Lifetime Stats</button>
               </div>
 
@@ -1910,6 +1951,22 @@ export default function App() {
                     })}
                   </div>
                 )
+              ) : playerModalView === "current" ? (
+                <div className="lifetimeStats currentSeasonStats">
+                  <div className="lifetimeKpis">
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Season record</div><div className="analyticsKpiValue">{currentStats.wins}–{currentStats.losses}</div><div className="analyticsKpiSub">{currentStats.winPct}% win rate</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Matches played</div><div className="analyticsKpiValue">{currentStats.played}</div><div className="analyticsKpiSub">{seasonLabel}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful challenges</div><div className="analyticsKpiValue">{currentStats.successfulChallenges}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful defences</div><div className="analyticsKpiValue">{currentStats.successfulDefences}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{currentStats.bestStreak}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Current position</div><div className="analyticsKpiValue">{selectedPlayer?.position >= 1 && selectedPlayer?.position <= playerCount ? `#${selectedPlayer.position}` : "—"}</div></div>
+                  </div>
+                  <div className="analyticsGrid">
+                    <div className="analyticsBox"><div className="analyticsBoxTitle">Season totals</div><div className="careerTotals"><div>Sets <strong>{currentStats.setsWon}–{currentStats.setsLost}</strong></div><div>Games <strong>{currentStats.gamesWon}–{currentStats.gamesLost}</strong></div><div>Set diff <strong>{currentStats.setsWon-currentStats.setsLost >= 0 ? "+" : ""}{currentStats.setsWon-currentStats.setsLost}</strong></div><div>Game diff <strong>{currentStats.gamesWon-currentStats.gamesLost >= 0 ? "+" : ""}{currentStats.gamesWon-currentStats.gamesLost}</strong></div></div></div>
+                    <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{currentStats.surfaces.length ? currentStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played-x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
+                  </div>
+                  <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Current-season head to head</div>{currentStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th><th>Win %</th></tr></thead><tbody>{currentStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.played-x.wins}</td><td>{x.played ? Math.round((x.wins/x.played)*100) : 0}%</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history this season.</div>}</div>
+                </div>
               ) : lifetimeLoading ? <div className="hint lifetimeStatus">Loading lifetime statistics…</div>
                 : lifetimeError ? <div className="errorBox">{lifetimeError}</div>
                 : !lifetimeStats ? <div className="hint lifetimeStatus">No lifetime statistics available.</div>
@@ -2707,7 +2764,10 @@ const css = `
   .analyticsPosition { font-size: 11px; color: rgba(255,255,255,0.58); margin-top: 2px; }
   .analyticsForm { min-height: 22px; justify-content: flex-start; }
   .playerProfile { display: grid; gap: 14px; }
-  .playerProfileToggle { width: min(100%, 520px); margin: 0 auto; }
+  .playerProfileModal { width: min(1080px, calc(100vw - 36px)); max-height: calc(100vh - 36px); display: flex; flex-direction: column; }
+  .playerProfileModal .modalBody { overflow: auto; }
+  .playerProfileToggle { width: 100%; max-width: 640px; margin: 0; }
+  .playerProfileToggle .segBtn { min-width: 150px; }
   .lifetimeStats { display: grid; gap: 14px; }
   .lifetimeKpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .lifetimeStatus { padding: 24px 4px; text-align: center; }
@@ -2762,6 +2822,8 @@ const css = `
     .ladderViewToggle .segBtn { flex: 1; min-width: 0; }
     .analyticsKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .lifetimeKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .playerProfileToggle { max-width: none; overflow-x: auto; }
+    .playerProfileToggle .segBtn { min-width: max-content; }
     .careerTotals { grid-template-columns: 1fr; }
     .analyticsGrid { grid-template-columns: 1fr; }
     .analyticsHeading { align-items: center; }
