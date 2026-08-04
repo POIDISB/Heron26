@@ -532,6 +532,101 @@ async function fetchCloudState(seasonId) {
   return state;
 }
 
+
+async function fetchLifetimeStats(playerName, division, seasonRows = []) {
+  if (!supabase) throw new Error("Supabase client not configured.");
+  const target = String(playerName || "").trim().toLowerCase();
+  if (!target) throw new Error("Player name is missing.");
+
+  const [matchRes, playerRes] = await Promise.all([
+    supabase.from("matches").select("*").eq("division", division).order("date", { ascending: true }).order("created_at", { ascending: true }),
+    supabase.from("players").select("season_id,pid,name,position,withdrawn").eq("division", division),
+  ]);
+  if (matchRes.error) throw new Error(matchRes.error.message);
+  if (playerRes.error) throw new Error(playerRes.error.message);
+
+  const seasonById = new Map((seasonRows || []).map((x) => [String(x.id), x]));
+  const sameName = (value) => String(value || "").trim().toLowerCase() === target;
+  const realMatches = (matchRes.data || []).filter((m) => !String(m.score || "").startsWith("ADMIN:"));
+  const careerMatches = realMatches.filter((m) => sameName(m.challenger_name) || sameName(m.opponent_name));
+
+  let wins = 0;
+  let successfulChallenges = 0;
+  let successfulDefences = 0;
+  let currentStreak = 0;
+  let bestStreak = 0;
+  let setsWon = 0;
+  let setsLost = 0;
+  let gamesWon = 0;
+  let gamesLost = 0;
+  const surfaceMap = new Map();
+  const opponentMap = new Map();
+  const seasonMap = new Map();
+
+  const normalized = careerMatches.map((m) => {
+    const isChallenger = sameName(m.challenger_name);
+    const didWin = (isChallenger && m.winner_id === "p1") || (!isChallenger && m.winner_id === "p2");
+    const opponentName = String(isChallenger ? m.opponent_name : m.challenger_name).trim() || "Unknown";
+    const parsed = parseScore(String(m.score || ""));
+    let ownSets = 0, oppSets = 0, ownGames = 0, oppGames = 0;
+    if (parsed.valid) {
+      const computed = computeFromSets(parsed.sets);
+      ownSets = isChallenger ? computed.p1Sets : computed.p2Sets;
+      oppSets = isChallenger ? computed.p2Sets : computed.p1Sets;
+      ownGames = isChallenger ? computed.p1Games : computed.p2Games;
+      oppGames = isChallenger ? computed.p2Games : computed.p1Games;
+    }
+    wins += didWin ? 1 : 0;
+    if (didWin) {
+      currentStreak += 1;
+      bestStreak = Math.max(bestStreak, currentStreak);
+      if (isChallenger) successfulChallenges += 1;
+      else successfulDefences += 1;
+    } else currentStreak = 0;
+    setsWon += ownSets; setsLost += oppSets; gamesWon += ownGames; gamesLost += oppGames;
+
+    const surface = String(m.surface || "Other");
+    const surfaceRow = surfaceMap.get(surface) || { surface, played: 0, wins: 0 };
+    surfaceRow.played += 1; surfaceRow.wins += didWin ? 1 : 0; surfaceMap.set(surface, surfaceRow);
+
+    const opponentKey = opponentName.toLowerCase();
+    const oppRow = opponentMap.get(opponentKey) || { name: opponentName, played: 0, wins: 0, losses: 0 };
+    oppRow.played += 1; if (didWin) oppRow.wins += 1; else oppRow.losses += 1; opponentMap.set(opponentKey, oppRow);
+
+    const sid = String(m.season_id || "");
+    const season = seasonById.get(sid);
+    const seasonRow = seasonMap.get(sid) || { seasonId: sid, name: season?.name || sid || "Unknown season", startDate: season?.start_date || "", played: 0, wins: 0 };
+    seasonRow.played += 1; seasonRow.wins += didWin ? 1 : 0; seasonMap.set(sid, seasonRow);
+
+    return { id: String(m.id), seasonId: sid, seasonName: season?.name || sid, date: String(m.date || ""), opponentName, isChallenger, didWin, score: String(m.score || ""), surface };
+  });
+
+  const playerRows = (playerRes.data || []).filter((p) => sameName(p.name));
+  const positions = playerRows.map((p) => Number(p.position)).filter((n) => Number.isFinite(n) && n > 0);
+  const seasonsPlayed = new Set([...careerMatches.map((m) => String(m.season_id || "")), ...playerRows.map((p) => String(p.season_id || ""))].filter(Boolean));
+
+  return {
+    name: playerName,
+    played: normalized.length,
+    wins,
+    losses: normalized.length - wins,
+    winPct: normalized.length ? Math.round((wins / normalized.length) * 100) : 0,
+    successfulChallenges,
+    successfulDefences,
+    bestStreak,
+    setsWon,
+    setsLost,
+    gamesWon,
+    gamesLost,
+    highestPosition: positions.length ? Math.min(...positions) : null,
+    seasonsPlayed: seasonsPlayed.size,
+    surfaces: [...surfaceMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => b.played - a.played),
+    headToHead: [...opponentMap.values()].sort((a, b) => b.played - a.played || b.wins - a.wins || a.name.localeCompare(b.name)),
+    seasons: [...seasonMap.values()].map((x) => ({ ...x, losses: x.played - x.wins, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))),
+    recent: [...normalized].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id))).slice(0, 10),
+  };
+}
+
 async function adminAction(pin, action, payload = {}) {
   const res = await fetch("/api/admin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin, action, payload }) });
   const data = await res.json().catch(() => ({}));
@@ -591,6 +686,10 @@ export default function App() {
 
   const [playerModalOpen, setPlayerModalOpen] = useState(false);
   const [playerModalPid, setPlayerModalPid] = useState(null);
+  const [playerModalView, setPlayerModalView] = useState("recent");
+  const [lifetimeStats, setLifetimeStats] = useState(null);
+  const [lifetimeLoading, setLifetimeLoading] = useState(false);
+  const [lifetimeError, setLifetimeError] = useState("");
 
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -1736,6 +1835,21 @@ export default function App() {
     catch (e) { setError(String(e?.message || e)); }
   }
 
+  useEffect(() => {
+    if (!playerModalOpen || playerModalView !== "lifetime" || !playerModalPid) return undefined;
+    const selected = players.find((x) => x.pid === playerModalPid);
+    const playerName = String(selected?.name || "").trim();
+    if (!playerName) return undefined;
+    let alive = true;
+    setLifetimeLoading(true);
+    setLifetimeError("");
+    fetchLifetimeStats(playerName, activeDivision, seasons)
+      .then((data) => { if (alive) setLifetimeStats(data); })
+      .catch((e) => { if (alive) setLifetimeError(String(e?.message || e || "Failed to load lifetime statistics.")); })
+      .finally(() => { if (alive) setLifetimeLoading(false); });
+    return () => { alive = false; };
+  }, [playerModalOpen, playerModalView, playerModalPid, activeDivision, seasons, players]);
+
   return (
     <div className="app">
       <style>{css}</style>
@@ -1749,57 +1863,77 @@ export default function App() {
           const base = p.name?.trim() ? p.name : "Player";
           const inactive = p.position < 1 || p.position > playerCount;
           const withdrawn = isWithdrawnPlayer(p);
-          return withdrawn ? `${base} — Results` : inactive ? `${base} (Inactive) — Results` : `${base} — Results`;
+          return withdrawn ? `${base} — Player profile` : inactive ? `${base} (Inactive) — Player profile` : `${base} — Player profile`;
         })()}
         onClose={() => {
           setPlayerModalOpen(false);
           setPlayerModalPid(null);
+          setPlayerModalView("recent");
+          setLifetimeStats(null);
+          setLifetimeError("");
         }}
-        actions={<button className="btn" onClick={() => { setPlayerModalOpen(false); setPlayerModalPid(null); }}>Close</button>}
+        actions={<button className="btn" onClick={() => { setPlayerModalOpen(false); setPlayerModalPid(null); setPlayerModalView("recent"); setLifetimeStats(null); setLifetimeError(""); }}>Close</button>}
       >
         {(() => {
           const pid = playerModalPid;
           if (!pid) return <div className="hint">No player selected.</div>;
-
+          const selectedPlayer = players.find((x) => x.pid === pid);
+          const pnameBase = selectedPlayer?.name || "(Unknown)";
+          const pname = selectedPlayer && !isWithdrawnPlayer(selectedPlayer) && (selectedPlayer.position < 1 || selectedPlayer.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
           const list = matchesView
             .filter((m) => m.challengerPid === pid || m.opponentPid === pid)
-            .sort((a, b) => {
-              const d = String(b.date).localeCompare(String(a.date));
-              if (d !== 0) return d;
-              return String(b.id).localeCompare(String(a.id));
-            });
-
-          if (list.length === 0) return <div className="hint">No matches logged for this player yet.</div>;
-
-          const pnameBase = players.find((x) => x.pid === pid)?.name || "(Unknown)";
-          const pObj = players.find((x) => x.pid === pid);
-          const pname = pObj && !isWithdrawnPlayer(pObj) && (pObj.position < 1 || pObj.position > playerCount) ? `${pnameBase} (Inactive)` : pnameBase;
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
 
           return (
-            <div className="playerMatchList mobileSpacious">
-              {list.map((m) => {
-                const isChallenger = m.challengerPid === pid;
-                const opponentName = isChallenger ? m.p2Name : m.p1Name;
-                const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
-                return (
-                  <div key={m.id} className="playerMatchRow roomy">
-                    <div className="playerMatchTop">
-                      <div className="mono">{m.date}</div>
-                      <div className={didWin ? "pillWin" : "pillLoss"}>{didWin ? "WIN" : "LOSS"}</div>
-                    </div>
-                    <div className="playerMatchMid stackedMobile">
-                      <div>
-                        <div className="playerMatchTitle">{pname} vs {opponentName}</div>
-                        <div className="hint">
-                          {isChallenger ? `Challenging for Position #${m.positionPlayedFor}` : `Defending Position #${m.positionPlayedFor}`} • {m.surface || "—"}
-                          {m.ladderMoveApplied ? " • Ladder moved" : ""}
+            <div className="playerProfile">
+              <div className="segControl playerProfileToggle" role="tablist" aria-label="Player profile view">
+                <button className={playerModalView === "recent" ? "segBtn active" : "segBtn"} onClick={() => setPlayerModalView("recent")}>Recent Matches</button>
+                <button className={playerModalView === "lifetime" ? "segBtn active" : "segBtn"} onClick={() => setPlayerModalView("lifetime")}>Lifetime Stats</button>
+              </div>
+
+              {playerModalView === "recent" ? (
+                list.length === 0 ? <div className="hint">No matches logged for this player yet.</div> : (
+                  <div className="playerMatchList mobileSpacious">
+                    {list.map((m) => {
+                      const isChallenger = m.challengerPid === pid;
+                      const opponentName = isChallenger ? m.p2Name : m.p1Name;
+                      const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
+                      return (
+                        <div key={m.id} className="playerMatchRow roomy">
+                          <div className="playerMatchTop"><div className="mono">{m.date}</div><div className={didWin ? "pillWin" : "pillLoss"}>{didWin ? "WIN" : "LOSS"}</div></div>
+                          <div className="playerMatchMid stackedMobile">
+                            <div><div className="playerMatchTitle">{pname} vs {opponentName}</div><div className="hint">{isChallenger ? `Challenging for Position #${m.positionPlayedFor}` : `Defending Position #${m.positionPlayedFor}`} • {m.surface || "—"}{m.ladderMoveApplied ? " • Ladder moved" : ""}</div></div>
+                            <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
+                          </div>
                         </div>
-                      </div>
-                      <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
-                    </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                )
+              ) : lifetimeLoading ? <div className="hint lifetimeStatus">Loading lifetime statistics…</div>
+                : lifetimeError ? <div className="errorBox">{lifetimeError}</div>
+                : !lifetimeStats ? <div className="hint lifetimeStatus">No lifetime statistics available.</div>
+                : (
+                  <div className="lifetimeStats">
+                    <div className="lifetimeKpis">
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Career record</div><div className="analyticsKpiValue">{lifetimeStats.wins}–{lifetimeStats.losses}</div><div className="analyticsKpiSub">{lifetimeStats.winPct}% win rate</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Seasons played</div><div className="analyticsKpiValue">{lifetimeStats.seasonsPlayed}</div><div className="analyticsKpiSub">{lifetimeStats.played} matches</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful challenges</div><div className="analyticsKpiValue">{lifetimeStats.successfulChallenges}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful defences</div><div className="analyticsKpiValue">{lifetimeStats.successfulDefences}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{lifetimeStats.bestStreak}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Highest position</div><div className="analyticsKpiValue">{lifetimeStats.highestPosition ? `#${lifetimeStats.highestPosition}` : "—"}</div></div>
+                    </div>
+
+                    <div className="analyticsGrid">
+                      <div className="analyticsBox"><div className="analyticsBoxTitle">Career totals</div><div className="careerTotals"><div>Sets <strong>{lifetimeStats.setsWon}–{lifetimeStats.setsLost}</strong></div><div>Games <strong>{lifetimeStats.gamesWon}–{lifetimeStats.gamesLost}</strong></div><div>Set diff <strong>{lifetimeStats.setsWon - lifetimeStats.setsLost >= 0 ? "+" : ""}{lifetimeStats.setsWon - lifetimeStats.setsLost}</strong></div><div>Game diff <strong>{lifetimeStats.gamesWon - lifetimeStats.gamesLost >= 0 ? "+" : ""}{lifetimeStats.gamesWon - lifetimeStats.gamesLost}</strong></div></div></div>
+                      <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{lifetimeStats.surfaces.length ? lifetimeStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played - x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
+                    </div>
+
+                    <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Season by season</div><div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Season</th><th>Played</th><th>Record</th><th>Win %</th></tr></thead><tbody>{lifetimeStats.seasons.map((x) => <tr key={x.seasonId}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td><td>{x.winPct}%</td></tr>)}</tbody></table></div></div>
+
+                    <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Lifetime head to head</div>{lifetimeStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th></tr></thead><tbody>{lifetimeStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history.</div>}</div>
+                  </div>
+                )}
             </div>
           );
         })()}
@@ -2572,6 +2706,16 @@ const css = `
   .analyticsEmpty { padding: 0 14px 14px; }
   .analyticsPosition { font-size: 11px; color: rgba(255,255,255,0.58); margin-top: 2px; }
   .analyticsForm { min-height: 22px; justify-content: flex-start; }
+  .playerProfile { display: grid; gap: 14px; }
+  .playerProfileToggle { width: min(100%, 520px); margin: 0 auto; }
+  .lifetimeStats { display: grid; gap: 14px; }
+  .lifetimeKpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .lifetimeStatus { padding: 24px 4px; text-align: center; }
+  .careerTotals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .careerTotals > div, .lifetimeRow { border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.035); border-radius: 10px; padding: 10px 12px; }
+  .lifetimeRow { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; }
+  .lifetimeTable { min-width: 560px; }
+
 
   @media (max-width: 720px) {
     .mobileOnly { display: block; }
@@ -2617,6 +2761,8 @@ const css = `
     .ladderViewToggle { width: 100%; }
     .ladderViewToggle .segBtn { flex: 1; min-width: 0; }
     .analyticsKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lifetimeKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .careerTotals { grid-template-columns: 1fr; }
     .analyticsGrid { grid-template-columns: 1fr; }
     .analyticsHeading { align-items: center; }
     .analyticsKpiValue { font-size: 24px; }
