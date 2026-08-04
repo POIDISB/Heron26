@@ -14,11 +14,12 @@ import { createClient } from "@supabase/supabase-js";
  */
 
 const DEFAULT_PLAYER_COUNT = 40;
+const LEGACY_SEASON_ID = "may-july-2026";
 const CAPACITY = 60;
 const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"];
 const DIVISIONS = [
-  { key: "mens", label: "Men" },
-  { key: "womens", label: "Women" },
+  { key: "mens", label: "Men's" },
+  { key: "womens", label: "Women's" },
 ];
 
 const DROP_PERIODS = [
@@ -329,10 +330,11 @@ function StatCell({ locked, value, onChange }) {
   return <input className="numInput" type="number" min={0} value={value} onChange={(e) => onChange(asNumber(e.target.value, 0))} />;
 }
 
-function LeaderCard({ medal, p }) {
+function LeaderCard({ medal, p, rank, onClick, form = [] }) {
   if (!p) return <div className="leaderCard empty">—</div>;
   return (
-    <div className="leaderCard">
+    <button type="button" className={`leaderCard podium rank${rank}`} onClick={onClick}>
+      <div className="leaderGlow" />
       <div className="leaderMedal">{medal}</div>
       <div className="leaderName" title={p.name}>
         {p.name}
@@ -346,7 +348,8 @@ function LeaderCard({ medal, p }) {
           SD: {p.setDiff} • GD: {p.gameDiff}
         </div>
       </div>
-    </div>
+      <div className="formStrip">{form.map((x, i) => <span key={i} className={x === "W" ? "formWin" : "formLoss"}>{x}</span>)}</div>
+    </button>
   );
 }
 
@@ -375,105 +378,88 @@ function MobileSummary({ divisionLabel, playerCount, totalMatches, top3 }) {
   );
 }
 
-async function fetchCloudState() {
-  if (!supabase) throw new Error("Supabase client not configured. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-
-  const [pRes, mRes, sRes] = await Promise.all([
-    supabase.from("players").select("*").order("division", { ascending: true }).order("position", { ascending: true }),
-    supabase.from("matches").select("*").order("created_at", { ascending: false }),
-    supabase.from("settings").select("*").in("key", ["playerCount_mens", "playerCount_womens"]),
+async function fetchSeasonMeta() {
+  if (!supabase) throw new Error("Supabase client not configured.");
+  const [seasonRes, settingRes] = await Promise.all([
+    supabase.from("seasons").select("*").order("start_date", { ascending: false }),
+    supabase.from("settings").select("*").in("key", ["default_public_season", "default_public_division"]),
   ]);
+  if (seasonRes.error) throw new Error(seasonRes.error.message);
+  if (settingRes.error) throw new Error(settingRes.error.message);
+  const settings = Object.fromEntries((settingRes.data || []).map((x) => [x.key, x.value]));
+  return {
+    seasons: seasonRes.data || [],
+    defaultSeasonId: String(settings.default_public_season || LEGACY_SEASON_ID),
+    defaultDivision: settings.default_public_division === "womens" ? "womens" : "mens",
+  };
+}
 
+async function fetchCloudState(seasonId) {
+  if (!supabase) throw new Error("Supabase client not configured. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+  const sid = String(seasonId || LEGACY_SEASON_ID);
+  const [pRes, mRes, sRes] = await Promise.all([
+    supabase.from("players").select("*").eq("season_id", sid).order("division", { ascending: true }).order("position", { ascending: true }),
+    supabase.from("matches").select("*").eq("season_id", sid).order("created_at", { ascending: false }),
+    supabase.from("settings").select("*").in("key", [`playerCount_${sid}_mens`, `playerCount_${sid}_womens`]),
+  ]);
   if (pRes.error) throw new Error(pRes.error.message);
   if (mRes.error) throw new Error(mRes.error.message);
   if (sRes.error) throw new Error(sRes.error.message);
-
   const state = defaultState();
-
   for (const division of ["mens", "womens"]) {
-    const playersForDivision = (pRes.data || []).filter((r) => String(r.division || "mens") === division);
-    const byPos = new Map(playersForDivision.map((row) => [Number(row.position), row]));
+    const rows = (pRes.data || []).filter((r) => String(r.division || "mens") === division);
+    const byPos = new Map(rows.map((row) => [Number(row.position), row]));
     const players = [];
-
     for (let pos = 1; pos <= CAPACITY; pos++) {
       const row = byPos.get(pos);
-      if (!row) {
-        players.push(createEmptyPlayer(pos, division));
-        continue;
-      }
+      if (!row) { players.push(createEmptyPlayer(pos, division)); continue; }
       players.push({
-        ...createEmptyPlayer(pos, division),
-        pid: String(row.pid ?? `${division}_p${pos}`),
-        division,
-        position: pos,
-        name: String(row.name || ""),
-        matchesPlayed: asNumber(row.matches_played, 0),
-        matchesWon: asNumber(row.matches_won, 0),
-        setsWon: asNumber(row.sets_won, 0),
-        setsLost: asNumber(row.sets_lost, 0),
-        gamesWon: asNumber(row.games_won, 0),
-        gamesLost: asNumber(row.games_lost, 0),
-        apr: asNumber(row.apr, 0),
-        may: asNumber(row.may, 0),
-        jun: asNumber(row.jun, 0),
-        jul: asNumber(row.jul, 0),
-        aug: asNumber(row.aug, 0),
+        ...createEmptyPlayer(pos, division), pid: String(row.pid ?? `${division}_p${pos}`), division, position: pos,
+        name: String(row.name || ""), matchesPlayed: asNumber(row.matches_played, 0), matchesWon: asNumber(row.matches_won, 0),
+        setsWon: asNumber(row.sets_won, 0), setsLost: asNumber(row.sets_lost, 0), gamesWon: asNumber(row.games_won, 0), gamesLost: asNumber(row.games_lost, 0),
+        apr: asNumber(row.apr, 0), may: asNumber(row.may, 0), jun: asNumber(row.jun, 0), jul: asNumber(row.jul, 0), aug: asNumber(row.aug, 0),
         withdrawn: Boolean(row.withdrawn || String(row.name || "").startsWith("W - ")),
       });
     }
-
-    const settingsRow = (sRes.data || []).find((x) => x.key === `playerCount_${division}`);
+    const settingsRow = (sRes.data || []).find((x) => x.key === `playerCount_${sid}_${division}`);
     state[division] = {
-      playerCount: clamp(asNumber(settingsRow?.value ?? DEFAULT_PLAYER_COUNT, DEFAULT_PLAYER_COUNT), 2, CAPACITY),
-      players,
-      matches: (mRes.data || [])
-        .filter((m) => String(m.division || "mens") === division)
-        .map((row) => ({
-          id: String(row.id),
-          division,
-          date: String(row.date || ""),
-          positionPlayedFor: asNumber(row.position_played_for, 1),
-          challengerPid: String(row.challenger_pid || ""),
-          opponentPid: String(row.opponent_pid || ""),
-          winnerId: row.winner_id === "p1" || row.winner_id === "p2" ? row.winner_id : "p2",
-          score: String(row.score || ""),
-          surface: String(row.surface || ""),
-          challengerName: String(row.challenger_name || ""),
-          opponentName: String(row.opponent_name || ""),
-          winnerNameSnapshot: String(row.winner_name || ""),
-          challengerStartPos: asNumber(row.challenger_start_pos, 0),
-          opponentStartPos: asNumber(row.opponent_start_pos, 0),
-          ladderMoveApplied: Boolean(row.ladder_move_applied),
-        })),
+      playerCount: clamp(asNumber(settingsRow?.value ?? DEFAULT_PLAYER_COUNT, DEFAULT_PLAYER_COUNT), 2, CAPACITY), players,
+      matches: (mRes.data || []).filter((m) => String(m.division || "mens") === division).map((row) => ({
+        id: String(row.id), division, date: String(row.date || ""), positionPlayedFor: asNumber(row.position_played_for, 1),
+        challengerPid: String(row.challenger_pid || ""), opponentPid: String(row.opponent_pid || ""),
+        winnerId: row.winner_id === "p1" || row.winner_id === "p2" ? row.winner_id : "p2", score: String(row.score || ""), surface: String(row.surface || ""),
+        challengerName: String(row.challenger_name || ""), opponentName: String(row.opponent_name || ""), winnerNameSnapshot: String(row.winner_name || ""),
+        challengerStartPos: asNumber(row.challenger_start_pos, 0), opponentStartPos: asNumber(row.opponent_start_pos, 0), ladderMoveApplied: Boolean(row.ladder_move_applied),
+      })),
     };
   }
-
   return state;
 }
 
-async function saveCloudState(pin, fullState) {
+async function adminAction(pin, action, payload = {}) {
+  const res = await fetch("/api/admin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin, action, payload }) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Admin action failed.");
+  return data;
+}
+
+async function saveCloudState(pin, fullState, seasonId) {
   const payload = {
-    playerCounts: {
-      mens: fullState.mens.playerCount,
-      womens: fullState.womens.playerCount,
-    },
+    seasonId,
+    playerCounts: { mens: fullState.mens.playerCount, womens: fullState.womens.playerCount },
     players: [...fullState.mens.players, ...fullState.womens.players],
     matches: [...fullState.mens.matches, ...fullState.womens.matches],
   };
-
-  const res = await fetch("/api/admin", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pin, action: "saveState", payload }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "Failed to save.");
-  return data;
+  return adminAction(pin, "saveState", payload);
 }
 
 export default function App() {
   const [state, setState] = useState(() => defaultState());
   const [activeDivision, setActiveDivision] = useState("mens");
+  const [seasons, setSeasons] = useState([]);
+  const [activeSeasonId, setActiveSeasonId] = useState(LEGACY_SEASON_ID);
+  const [metaReady, setMetaReady] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
 
@@ -531,41 +517,44 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-
-    async function load() {
-      setCloudError("");
-      setCloudLoading(true);
+    (async () => {
       try {
-        const cloudState = await fetchCloudState();
+        const meta = await fetchSeasonMeta();
         if (!alive) return;
-        setState(cloudState);
-        setDirty(false);
+        setSeasons(meta.seasons);
+        setActiveSeasonId(meta.defaultSeasonId);
+        setActiveDivision(meta.defaultDivision);
       } catch (e) {
-        if (!alive) return;
-        setCloudError(String(e?.message || e || "Failed to load from cloud."));
+        if (alive) setCloudError(String(e?.message || e || "Failed to load seasons."));
       } finally {
-        if (!alive) return;
-        setCloudLoading(false);
+        if (alive) setMetaReady(true);
       }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!metaReady || !activeSeasonId) return undefined;
+    let alive = true;
+    async function load() {
+      setCloudError(""); setCloudLoading(true);
+      try { const cloudState = await fetchCloudState(activeSeasonId); if (alive) { setState(cloudState); setDirty(false); } }
+      catch (e) { if (alive) setCloudError(String(e?.message || e || "Failed to load from cloud.")); }
+      finally { if (alive) setCloudLoading(false); }
     }
-
     load();
-
-    if (!supabase) return () => {
-      alive = false;
-    };
-
-    const channel = supabase
-      .channel("heron-ladder")
-      .on("postgres_changes", { event: "*", schema: "public", table: "players" }, () => load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, () => load())
+    if (!supabase) return () => { alive = false; };
+    const channel = supabase.channel(`heron-ladder-${activeSeasonId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `season_id=eq.${activeSeasonId}` }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `season_id=eq.${activeSeasonId}` }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, load)
       .subscribe();
+    return () => { alive = false; supabase.removeChannel(channel); };
+  }, [metaReady, activeSeasonId]);
 
-    return () => {
-      alive = false;
-      supabase.removeChannel(channel);
-    };
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 60000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -918,7 +907,7 @@ export default function App() {
     setDirty(true);
 
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
       setMatchAddedOpen(true);
       setScore("");
@@ -977,7 +966,7 @@ export default function App() {
       setDirty(true);
 
       try {
-        await saveCloudState(pin, nextState);
+        await saveCloudState(pin, nextState, activeSeasonId);
         setDirty(false);
       } catch (e) {
         setError(String(e?.message || e || "Failed to reverse drop action in cloud."));
@@ -1036,7 +1025,7 @@ export default function App() {
     setDirty(true);
 
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
     } catch (e) {
       setError(String(e?.message || e || "Failed to delete in cloud."));
@@ -1160,7 +1149,7 @@ export default function App() {
     setDirty(true);
 
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
       setEditOpen(false);
       setEditId(null);
@@ -1172,7 +1161,7 @@ export default function App() {
   async function actuallySaveAll(pin) {
     setError("");
     try {
-      await saveCloudState(pin, state);
+      await saveCloudState(pin, state, activeSeasonId);
       setDirty(false);
     } catch (e) {
       setError(String(e?.message || e || "Failed to save to cloud."));
@@ -1210,9 +1199,10 @@ export default function App() {
     if (!target || isWithdrawnPlayer(target)) return sourcePlayers;
 
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p))
+      .filter((p) => !isWithdrawnPlayer(p) && p.position >= 1 && p.position <= playerCount)
       .sort((a, b) => a.position - b.position);
 
+    const reserve = sourcePlayers.filter((p) => !isWithdrawnPlayer(p) && (p.position < 1 || p.position > playerCount)).sort((a, b) => a.position - b.position);
     const withdrawn = sourcePlayers
       .filter((p) => isWithdrawnPlayer(p))
       .sort((a, b) => a.position - b.position);
@@ -1228,6 +1218,7 @@ export default function App() {
     return [
       ...reorderedActive.map((p, i) => ({ ...p, position: i + 1 })),
       ...withdrawn.map((p, i) => ({ ...p, position: reorderedActive.length + i + 1 })),
+      ...reserve.map((p, i) => ({ ...p, position: reorderedActive.length + withdrawn.length + i + 1 })),
     ];
   }
 
@@ -1370,7 +1361,7 @@ export default function App() {
     setState(nextState);
     setDirty(true);
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
       setSelectedDropPids([]);
     } catch (e) {
@@ -1403,7 +1394,7 @@ export default function App() {
     setState(nextState);
     setDirty(true);
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
       setWithdrawPid("");
     } catch (e) {
@@ -1435,7 +1426,7 @@ export default function App() {
     setDirty(true);
 
     try {
-      await saveCloudState(pin, nextState);
+      await saveCloudState(pin, nextState, activeSeasonId);
       setDirty(false);
       setManualMovePid("");
       setManualMovePosition("1");
@@ -1486,6 +1477,60 @@ export default function App() {
   }, [matchPos, playerCount, players]);
 
   const divisionLabel = activeDivision === "mens" ? "Men's" : "Women's";
+  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
+  const seasonLabel = activeSeason?.name || "Season";
+  const countdownText = (() => {
+    if (!activeSeason?.start_date || !activeSeason?.end_date) return "Season dates not set";
+    const start = new Date(`${activeSeason.start_date}T00:00:00`);
+    const end = new Date(`${activeSeason.end_date}T23:59:59`);
+    const now = new Date(nowTick);
+    const fmt = (ms) => { const total = Math.max(0, Math.floor(ms / 1000)); const days = Math.floor(total / 86400); const hours = Math.floor((total % 86400) / 3600); const mins = Math.floor((total % 3600) / 60); return `${days}d ${hours}h ${mins}m`; };
+    if (now < start) return `Starts in ${fmt(start - now)}`;
+    if (now > end) return "Season finished";
+    return `${fmt(end - now)} remaining`;
+  })();
+
+  async function exportXlsx() {
+    try {
+      const XLSX = await import("xlsx");
+      const ladderRows = displayedPlayers.map((p) => ({ Position: isWithdrawnPlayer(p) ? "W" : p.position, Name: p.name, Played: p.matchesPlayed, Won: p.matchesWon, Lost: Math.max(0, p.matchesPlayed - p.matchesWon), "Sets Won": p.setsWon, "Sets Lost": p.setsLost, "Games Won": p.gamesWon, "Games Lost": p.gamesLost }));
+      const historyRows = matchesView.map((m) => ({ Date: m.date, Challenger: m.p1Name, Opponent: m.p2Name, Winner: m.winnerName, Score: formatScore(m.score), Surface: m.surface, "Position Played For": m.positionPlayedFor }));
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ladderRows), "Ladder"); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(historyRows), "Match History");
+      XLSX.writeFile(wb, `Heron-${seasonLabel}-${divisionLabel}.xlsx`.replace(/[^a-z0-9_.-]+/gi, "-"));
+    } catch (e) { setError(`Excel export failed: ${e?.message || e}`); }
+  }
+
+  async function exportPdf() {
+    try {
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      doc.setFontSize(18); doc.text(`Heron Tennis Ladder`, 14, 16); doc.setFontSize(12); doc.text(`${seasonLabel} • ${divisionLabel}`, 14, 24); doc.setFontSize(9); doc.text(`Exported ${new Date().toLocaleString("en-GB")}`, 14, 30);
+      let y = 39; doc.setFont(undefined, "bold"); doc.text("Pos", 14, y); doc.text("Player", 28, y); doc.text("P", 118, y); doc.text("W", 132, y); doc.text("L", 146, y); doc.text("SD", 160, y); doc.text("GD", 178, y); doc.setFont(undefined, "normal"); y += 6;
+      for (const p of displayedPlayers) { if (y > 282) { doc.addPage(); y = 16; } doc.text(String(isWithdrawnPlayer(p) ? "W" : p.position), 14, y); doc.text(String(p.name || "—").slice(0, 42), 28, y); doc.text(String(p.matchesPlayed || 0), 118, y); doc.text(String(p.matchesWon || 0), 132, y); doc.text(String(Math.max(0, (p.matchesPlayed || 0) - (p.matchesWon || 0))), 146, y); doc.text(String(p.setDiff || 0), 160, y); doc.text(String(p.gameDiff || 0), 178, y); y += 6; }
+      doc.save(`Heron-${seasonLabel}-${divisionLabel}.pdf`.replace(/[^a-z0-9_.-]+/gi, "-"));
+    } catch (e) { setError(`PDF export failed: ${e?.message || e}`); }
+  }
+
+  async function createSeason() {
+    const name = window.prompt("New season name", "August–October 2026"); if (!name) return;
+    const startDate = window.prompt("Start date (YYYY-MM-DD)", "2026-08-01"); if (!startDate) return;
+    const endDate = window.prompt("End date (YYYY-MM-DD)", "2026-10-31"); if (!endDate) return;
+    const pin = window.prompt("Admin PIN"); if (!pin) return;
+    try { const result = await adminAction(pin, "createSeason", { name, startDate, endDate }); const meta = await fetchSeasonMeta(); setSeasons(meta.seasons); setActiveSeasonId(result.season.id); }
+    catch (e) { setError(String(e?.message || e)); }
+  }
+
+  async function renameSeason() {
+    if (!activeSeason) return; const name = window.prompt("Season name", activeSeason.name); if (!name || name === activeSeason.name) return; const pin = window.prompt("Admin PIN"); if (!pin) return;
+    try { await adminAction(pin, "renameSeason", { seasonId: activeSeasonId, name }); const meta = await fetchSeasonMeta(); setSeasons(meta.seasons); }
+    catch (e) { setError(String(e?.message || e)); }
+  }
+
+  async function setPublicDefault() {
+    const pin = window.prompt("Admin PIN"); if (!pin) return;
+    try { await adminAction(pin, "setPublicDefault", { seasonId: activeSeasonId, division: activeDivision }); window.alert(`${seasonLabel} / ${divisionLabel} is now the guest default.`); }
+    catch (e) { setError(String(e?.message || e)); }
+  }
 
   return (
     <div className="app">
@@ -1603,15 +1648,19 @@ export default function App() {
         <div className="card stickyControlsCard" style={{ marginBottom: 14 }}>
           <div className="cardHeader mobileStickyHeader">
             <div>
-              <div className="title">Heron Tennis Summer Ladder 2026</div>
+              <div className="title">Heron Tennis Ladder</div>
+              <div className="seasonTimer">{countdownText}</div>
               <div className="subtitle">
-                {divisionLabel} ladder • {playerCount} players • Cloud synced.
-                {cloudLoading ? " • Loading…" : ""} • Build admin-visible-v5
+                {seasonLabel} • {divisionLabel} ladder • {playerCount} players • Cloud synced.
+                {cloudLoading ? " • Loading…" : ""} • Build seasons-v1
               </div>
               {cloudError ? <div className="error">Cloud error: {cloudError}</div> : null}
               {!supabase ? <div className="error">Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY</div> : null}
             </div>
             <div className="actions mobileActions">
+              <select className="textInput seasonSelect" value={activeSeasonId} onChange={(e) => setActiveSeasonId(e.target.value)}>
+                {seasons.map((season) => <option key={season.id} value={season.id}>{season.name}</option>)}
+              </select>
               <div className="segControl fullOnMobile">
                 {DIVISIONS.map((d) => (
                   <button key={d.key} className={activeDivision === d.key ? "segBtn active" : "segBtn"} onClick={() => setActiveDivision(d.key)}>
@@ -1619,6 +1668,8 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <button className="btnGhost" onClick={exportPdf}>Export PDF</button>
+              <button className="btnGhost" onClick={exportXlsx}>Export Excel</button>
               <button className={locked ? "btn" : "btnGhost"} onClick={() => (locked ? openPin("unlock") : setLocked(true))}>
                 {locked ? "Locked — Admin unlock" : "Unlocked — Lock"}
               </button>
@@ -1644,7 +1695,7 @@ export default function App() {
                 <div className="hint">Top 3 • {divisionLabel}</div>
               </div>
             </div>
-            {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid"><LeaderCard medal="🥇" p={leaderboardTop3[0]} /><LeaderCard medal="🥈" p={leaderboardTop3[1]} /><LeaderCard medal="🥉" p={leaderboardTop3[2]} /></div>}
+            {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
           </div>
         </div>
 
@@ -1892,6 +1943,15 @@ export default function App() {
                 </div>
 
                 <div className="sep" />
+                <div className="managementBox" style={{ marginBottom: 12 }}>
+                  <div className="cardTitle">Season management</div>
+                  <div className="hint">Current: {seasonLabel}. Renaming is safe because data uses the permanent season ID.</div>
+                  <div className="row">
+                    <button className="btn" onClick={createSeason}>Create season</button>
+                    <button className="btnGhost" onClick={renameSeason}>Rename current</button>
+                    <button className="btnGhost" onClick={setPublicDefault}>Set current view as guest default</button>
+                  </div>
+                </div>
                 <div className="cardTitle" style={{ marginBottom: 8 }}>Player count</div>
                 <div className="mobileOnly collapsibleWrap">
                   <button className="collapseBtn" onClick={() => setMobileSettingsOpen((v) => !v)}>
@@ -1971,6 +2031,8 @@ const css = `
   .cardBody { padding: 14px; }
 
   .title { font-size: 20px; font-weight: 800; }
+  .seasonTimer { margin-top: 8px; font-size: 18px; font-weight: 900; text-align: center; letter-spacing: .03em; }
+  .seasonSelect { min-width: 210px; width: auto; }
   .subtitle { margin-top: 4px; font-size: 12px; color: var(--muted); }
   .cardTitle { font-size: 14px; font-weight: 800; }
 
@@ -2131,9 +2193,15 @@ const css = `
   .leaderRowGrid { display: grid; grid-template-columns: 1fr; gap: 10px; }
   @media (min-width: 920px) { .leaderRowGrid { grid-template-columns: repeat(3, 1fr); gap: 12px; } }
 
-  .leaderCard {
-    border: 1px solid var(--border); border-radius: 14px; padding: 12px; background: rgba(255,255,255,0.04); min-height: 92px;
-  }
+  .leaderCard { border: 1px solid var(--border); border-radius: 18px; padding: 16px; background: rgba(255,255,255,0.04); min-height: 130px; color: var(--text); text-align: left; position: relative; overflow: hidden; cursor: pointer; width: 100%; }
+  .leaderCard.rank1 { transform: translateY(-10px) scale(1.025); min-height: 150px; background: linear-gradient(145deg, rgba(255,215,0,.19), rgba(255,255,255,.04)); }
+  .leaderCard.rank2 { background: linear-gradient(145deg, rgba(210,220,235,.14), rgba(255,255,255,.04)); }
+  .leaderCard.rank3 { background: linear-gradient(145deg, rgba(205,127,50,.16), rgba(255,255,255,.04)); }
+  .leaderGlow { position:absolute; inset:-70% 20% auto; height:130px; background:rgba(255,255,255,.12); filter:blur(35px); pointer-events:none; }
+  .leaderMedal { font-size: 30px !important; position: relative; }
+  .formStrip { display:flex; gap:5px; margin-top:12px; }
+  .formStrip span { width:24px; height:24px; border-radius:999px; display:grid; place-items:center; font-size:11px; font-weight:900; }
+  .formWin { background:rgba(34,197,94,.25); } .formLoss { background:rgba(239,68,68,.23); }
   .leaderCard.empty { display: flex; align-items: center; justify-content: center; color: var(--muted); }
   .leaderMedal { font-size: 18px; }
   .leaderName { font-weight: 600; font-size: 14px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.01em; }
