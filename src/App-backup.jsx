@@ -378,80 +378,6 @@ function MobileSummary({ divisionLabel, playerCount, totalMatches, top3 }) {
   );
 }
 
-
-function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
-  const maxMonth = Math.max(1, ...analytics.monthly.map((x) => x.matches));
-  const maxSurface = Math.max(1, ...analytics.surfaces.map((x) => x.matches));
-
-  return (
-    <div className="analyticsPanel">
-      <div className="analyticsHeading">
-        <div>
-          <div className="cardTitle">Analytics</div>
-          <div className="hint">{seasonLabel} • {divisionLabel} • Real matches only (admin actions excluded)</div>
-        </div>
-        <div className="analyticsBadge">{analytics.totalMatches} completed</div>
-      </div>
-
-      <div className="analyticsKpis">
-        <div className="analyticsKpi"><div className="analyticsKpiLabel">Active players</div><div className="analyticsKpiValue">{analytics.activePlayers}</div></div>
-        <div className="analyticsKpi"><div className="analyticsKpiLabel">Matches played</div><div className="analyticsKpiValue">{analytics.totalMatches}</div></div>
-        <div className="analyticsKpi"><div className="analyticsKpiLabel">Deciding matches</div><div className="analyticsKpiValue">{analytics.deciders}</div><div className="analyticsKpiSub">{analytics.deciderRate}% of matches</div></div>
-        <div className="analyticsKpi"><div className="analyticsKpiLabel">Challenge wins</div><div className="analyticsKpiValue">{analytics.challengerWins}</div><div className="analyticsKpiSub">{analytics.challengeWinRate}% success rate</div></div>
-      </div>
-
-      <div className="analyticsGrid">
-        <div className="analyticsBox">
-          <div className="analyticsBoxTitle">Monthly activity</div>
-          <div className="barChart">
-            {analytics.monthly.map((item) => (
-              <div className="barRow" key={item.key}>
-                <div className="barLabel">{item.label}</div>
-                <div className="barTrack"><div className="barFill" style={{ width: `${Math.max(item.matches ? 8 : 0, (item.matches / maxMonth) * 100)}%` }} /></div>
-                <div className="barValue">{item.matches}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="analyticsBox">
-          <div className="analyticsBoxTitle">Surface split</div>
-          <div className="barChart">
-            {analytics.surfaces.map((item) => (
-              <div className="barRow" key={item.surface}>
-                <div className="barLabel surfaceLabel">{item.surface}</div>
-                <div className="barTrack"><div className="barFill alt" style={{ width: `${Math.max(item.matches ? 8 : 0, (item.matches / maxSurface) * 100)}%` }} /></div>
-                <div className="barValue">{item.matches}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="analyticsBox analyticsTableBox">
-        <div className="analyticsBoxTitle">Player performance</div>
-        {analytics.playerRows.length === 0 ? <div className="hint">Add completed matches to populate analytics.</div> : (
-          <div className="tableWrap">
-            <table className="table analyticsTable">
-              <thead><tr><th>Player</th><th>P</th><th>W</th><th>Win %</th><th>Set diff</th><th>Game diff</th><th>Current form</th><th>Best streak</th></tr></thead>
-              <tbody>
-                {analytics.playerRows.map((p) => (
-                  <tr key={p.pid}>
-                    <td><strong>{p.name}</strong><div className="analyticsPosition">Current #{p.position}</div></td>
-                    <td>{p.played}</td><td>{p.wins}</td><td>{p.winPct}%</td><td>{p.setDiff > 0 ? "+" : ""}{p.setDiff}</td><td>{p.gameDiff > 0 ? "+" : ""}{p.gameDiff}</td>
-                    <td><div className="formStrip analyticsForm">{p.form.map((x, i) => <span key={i} className={x === "W" ? "formWin" : "formLoss"}>{x}</span>)}</div></td>
-                    <td>{p.bestStreak}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 async function fetchSeasonMeta() {
   if (!supabase) throw new Error("Supabase client not configured.");
   const [seasonRes, settingRes] = await Promise.all([
@@ -585,7 +511,6 @@ export default function App() {
   const pinRef = useRef(null);
 
   const liveRef = useRef(null);
-  const analyticsRef = useRef(null);
   const ladderRef = useRef(null);
   const addMatchRef = useRef(null);
   const historyRef = useRef(null);
@@ -855,82 +780,6 @@ export default function App() {
         return { ...m, p1Name, p2Name, winnerName: winnerName || "(Unknown)" };
       });
   }, [matches, players, playerCount]);
-
-  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
-  const seasonLabel = activeSeason?.name || "Season";
-
-  const analytics = useMemo(() => {
-    const realMatches = matchesView.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
-    const namedActive = calculatedPlayers.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim());
-    const monthLabels = [
-      ["apr", "Apr"], ["may", "May"], ["jun", "Jun"], ["jul", "Jul"], ["aug", "Aug"],
-      ["sep", "Sep"], ["oct", "Oct"], ["nov", "Nov"], ["dec", "Dec"], ["jan", "Jan"], ["feb", "Feb"], ["mar", "Mar"],
-    ];
-    const monthlyCounts = new Map();
-    const surfaceCounts = new Map(SURFACES.map((x) => [x, 0]));
-    let deciders = 0;
-    let challengerWins = 0;
-
-    for (const m of realMatches) {
-      const d = new Date(`${m.date}T12:00:00`);
-      if (!Number.isNaN(d.getTime())) {
-        const key = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"][d.getMonth()];
-        monthlyCounts.set(key, (monthlyCounts.get(key) || 0) + 1);
-      }
-      const surf = String(m.surface || "Other");
-      surfaceCounts.set(surf, (surfaceCounts.get(surf) || 0) + 1);
-      const parsed = parseScore(m.score);
-      if (parsed.valid && parsed.sets.length >= 3) deciders += 1;
-      if (m.winnerId === "p1") challengerWins += 1;
-    }
-
-    const seasonMonths = (() => {
-      const start = activeSeason?.start_date ? new Date(`${activeSeason.start_date}T12:00:00`) : null;
-      const end = activeSeason?.end_date ? new Date(`${activeSeason.end_date}T12:00:00`) : null;
-      if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return monthLabels.filter(([key]) => monthlyCounts.has(key));
-      const out = [];
-      const cursor = new Date(start.getFullYear(), start.getMonth(), 1, 12);
-      const endMonth = new Date(end.getFullYear(), end.getMonth(), 1, 12);
-      while (cursor <= endMonth && out.length < 12) {
-        const key = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"][cursor.getMonth()];
-        const label = cursor.toLocaleDateString("en-GB", { month: "short" });
-        out.push([key, label]);
-        cursor.setMonth(cursor.getMonth() + 1);
-      }
-      return out;
-    })();
-
-    const playerRows = namedActive.map((p) => {
-      const pm = realMatches.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid);
-      const chronological = [...pm].sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
-      let run = 0;
-      let bestStreak = 0;
-      const results = chronological.map((m) => {
-        const won = (m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid);
-        if (won) { run += 1; bestStreak = Math.max(bestStreak, run); } else run = 0;
-        return won ? "W" : "L";
-      });
-      const wins = results.filter((x) => x === "W").length;
-      return {
-        pid: p.pid, name: p.name, position: p.position, played: pm.length, wins,
-        winPct: pm.length ? Math.round((wins / pm.length) * 100) : 0,
-        setDiff: p.setDiff || 0, gameDiff: p.gameDiff || 0,
-        form: results.slice(-5).reverse(), bestStreak,
-      };
-    }).filter((p) => p.played > 0).sort((a, b) => b.wins - a.wins || b.winPct - a.winPct || b.gameDiff - a.gameDiff || a.position - b.position);
-
-    return {
-      activePlayers: namedActive.length,
-      totalMatches: realMatches.length,
-      deciders,
-      deciderRate: realMatches.length ? Math.round((deciders / realMatches.length) * 100) : 0,
-      challengerWins,
-      challengeWinRate: realMatches.length ? Math.round((challengerWins / realMatches.length) * 100) : 0,
-      monthly: seasonMonths.map(([key, label]) => ({ key, label, matches: monthlyCounts.get(key) || 0 })),
-      surfaces: [...surfaceCounts.entries()].map(([surface, count]) => ({ surface, matches: count })).filter((x) => x.matches > 0 || SURFACES.includes(x.surface)),
-      playerRows,
-    };
-  }, [matchesView, calculatedPlayers, activeSeason]);
 
   const lastResultByPid = useMemo(() => {
     const map = new Map();
@@ -1628,6 +1477,8 @@ export default function App() {
   }, [matchPos, playerCount, players]);
 
   const divisionLabel = activeDivision === "mens" ? "Men's" : "Women's";
+  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
+  const seasonLabel = activeSeason?.name || "Season";
   const countdownText = (() => {
     if (!activeSeason?.start_date || !activeSeason?.end_date) return "Season dates not set";
     const start = new Date(`${activeSeason.start_date}T00:00:00`);
@@ -1801,7 +1652,7 @@ export default function App() {
               <div className="seasonTimer">{countdownText}</div>
               <div className="subtitle">
                 {seasonLabel} • {divisionLabel} ladder • {playerCount} players • Cloud synced.
-                {cloudLoading ? " • Loading…" : ""} • Build analytics-v2
+                {cloudLoading ? " • Loading…" : ""} • Build seasons-v1
               </div>
               {cloudError ? <div className="error">Cloud error: {cloudError}</div> : null}
               {!supabase ? <div className="error">Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY</div> : null}
@@ -1830,7 +1681,6 @@ export default function App() {
           <div className="mobileOnly cardBody mobileToolbarWrap">
             <div className="quickNav">
               <button className="quickNavBtn" onClick={() => scrollToRef(liveRef)}>Live ranking</button>
-              <button className="quickNavBtn" onClick={() => scrollToRef(analyticsRef)}>Analytics</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(ladderRef)}>Ladder</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(addMatchRef)}>Add match</button>
               <button className="quickNavBtn" onClick={() => scrollToRef(historyRef)}>Match history</button>
@@ -1846,12 +1696,6 @@ export default function App() {
               </div>
             </div>
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
-          </div>
-        </div>
-
-        <div className="card" style={{ marginBottom: 14 }} ref={analyticsRef}>
-          <div className="cardBody">
-            <AnalyticsPanel analytics={analytics} divisionLabel={divisionLabel} seasonLabel={seasonLabel} />
           </div>
         </div>
 
@@ -2480,32 +2324,6 @@ const css = `
   }
   .bottomBarBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-
-  .analyticsPanel { display: grid; gap: 14px; }
-  .analyticsHeading { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
-  .analyticsBadge { border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 800; white-space: nowrap; }
-  .analyticsKpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-  .analyticsKpi, .analyticsBox { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.035); border-radius: 14px; padding: 14px; }
-  .analyticsKpiLabel { font-size: 12px; color: rgba(255,255,255,0.68); font-weight: 750; }
-  .analyticsKpiValue { font-size: 28px; line-height: 1.1; font-weight: 900; margin-top: 5px; }
-  .analyticsKpiSub { font-size: 11px; color: rgba(255,255,255,0.62); margin-top: 4px; }
-  .analyticsGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .analyticsBoxTitle { font-weight: 850; margin-bottom: 12px; }
-  .barChart { display: grid; gap: 10px; }
-  .barRow { display: grid; grid-template-columns: 54px minmax(80px, 1fr) 30px; gap: 9px; align-items: center; }
-  .barLabel { font-size: 12px; font-weight: 750; color: rgba(255,255,255,0.75); }
-  .surfaceLabel { width: 105px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .analyticsGrid .analyticsBox:nth-child(2) .barRow { grid-template-columns: 112px minmax(80px, 1fr) 30px; }
-  .barTrack { height: 10px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
-  .barFill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, rgba(96,165,250,0.75), rgba(167,139,250,0.95)); }
-  .barFill.alt { background: linear-gradient(90deg, rgba(45,212,191,0.75), rgba(96,165,250,0.95)); }
-  .barValue { text-align: right; font-size: 12px; font-weight: 850; }
-  .analyticsTableBox { padding: 0; overflow: hidden; }
-  .analyticsTableBox > .analyticsBoxTitle { padding: 14px 14px 0; }
-  .analyticsTable { min-width: 760px; }
-  .analyticsPosition { font-size: 11px; color: rgba(255,255,255,0.58); margin-top: 2px; }
-  .analyticsForm { min-height: 22px; justify-content: flex-start; }
-
   @media (max-width: 720px) {
     .mobileOnly { display: block; }
     .app { padding: 12px 12px 84px; }
@@ -2546,10 +2364,6 @@ const css = `
     .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
-    .analyticsKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .analyticsGrid { grid-template-columns: 1fr; }
-    .analyticsHeading { align-items: center; }
-    .analyticsKpiValue { font-size: 24px; }
     .managementGrid { grid-template-columns: 1fr; }
     .mobileToolbarWrap { padding-top: 10px; }
     .stackedMobile { flex-direction: column; align-items: flex-start; }
