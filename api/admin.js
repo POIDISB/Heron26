@@ -330,41 +330,89 @@ export default async function handler(req, res) {
         updated_at: new Date().toISOString(),
       }));
 
-      const deletePlayers = await supabase
-        .from("players")
-        .delete()
-        .eq("season_id", seasonId);
+      // Reconcile the season instead of deleting and rebuilding it.
+      // Matches must be removed before any players they reference, while
+      // players must exist before new or edited matches are upserted.
+      const [existingPlayersResult, existingMatchesResult] =
+        await Promise.all([
+          supabase
+            .from("players")
+            .select("pid")
+            .eq("season_id", seasonId),
+          supabase
+            .from("matches")
+            .select("id")
+            .eq("season_id", seasonId),
+        ]);
 
-      if (deletePlayers.error) {
-        throw deletePlayers.error;
+      if (existingPlayersResult.error) {
+        throw existingPlayersResult.error;
       }
 
-      if (players.length) {
-        const insertPlayers = await supabase
-          .from("players")
-          .insert(players);
+      if (existingMatchesResult.error) {
+        throw existingMatchesResult.error;
+      }
 
-        if (insertPlayers.error) {
-          throw insertPlayers.error;
+      const incomingPlayerIds = new Set(
+        players.map((player) => String(player.pid))
+      );
+      const incomingMatchIds = new Set(
+        matches.map((match) => String(match.id))
+      );
+
+      const removedMatchIds = (existingMatchesResult.data || [])
+        .map((row) => String(row.id))
+        .filter((id) => !incomingMatchIds.has(id));
+
+      const removedPlayerIds = (existingPlayersResult.data || [])
+        .map((row) => String(row.pid))
+        .filter((pid) => !incomingPlayerIds.has(pid));
+
+      if (removedMatchIds.length) {
+        const deleteRemovedMatches = await supabase
+          .from("matches")
+          .delete()
+          .eq("season_id", seasonId)
+          .in("id", removedMatchIds);
+
+        if (deleteRemovedMatches.error) {
+          throw deleteRemovedMatches.error;
         }
       }
 
-      const deleteMatches = await supabase
-        .from("matches")
-        .delete()
-        .eq("season_id", seasonId);
+      if (players.length) {
+        const upsertPlayers = await supabase
+          .from("players")
+          .upsert(players, {
+            onConflict: "season_id,pid",
+          });
 
-      if (deleteMatches.error) {
-        throw deleteMatches.error;
+        if (upsertPlayers.error) {
+          throw upsertPlayers.error;
+        }
       }
 
       if (matches.length) {
-        const insertMatches = await supabase
+        const upsertMatches = await supabase
           .from("matches")
-          .insert(matches);
+          .upsert(matches, {
+            onConflict: "id",
+          });
 
-        if (insertMatches.error) {
-          throw insertMatches.error;
+        if (upsertMatches.error) {
+          throw upsertMatches.error;
+        }
+      }
+
+      if (removedPlayerIds.length) {
+        const deleteRemovedPlayers = await supabase
+          .from("players")
+          .delete()
+          .eq("season_id", seasonId)
+          .in("pid", removedPlayerIds);
+
+        if (deleteRemovedPlayers.error) {
+          throw deleteRemovedPlayers.error;
         }
       }
 
