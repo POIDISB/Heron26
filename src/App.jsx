@@ -430,17 +430,39 @@ function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
 
       <div className="analyticsBox analyticsTableBox">
         <div className="analyticsBoxTitle">Player performance</div>
-        {analytics.playerRows.length === 0 ? <div className="hint">Add completed matches to populate analytics.</div> : (
+        {analytics.playerRows.length === 0 ? <div className="hint analyticsEmpty">Add completed matches to populate analytics.</div> : (
           <div className="tableWrap">
             <table className="table analyticsTable">
-              <thead><tr><th>Player</th><th>P</th><th>W</th><th>Win %</th><th>Set diff</th><th>Game diff</th><th>Current form</th><th>Best streak</th></tr></thead>
+              <thead><tr><th>Player</th><th>P</th><th>W</th><th>Win %</th><th>Successful challenges</th><th>Successful defences</th><th>Set diff</th><th>Game diff</th><th>Current form</th><th>Best streak</th></tr></thead>
               <tbody>
                 {analytics.playerRows.map((p) => (
                   <tr key={p.pid}>
                     <td><strong>{p.name}</strong><div className="analyticsPosition">Current #{p.position}</div></td>
-                    <td>{p.played}</td><td>{p.wins}</td><td>{p.winPct}%</td><td>{p.setDiff > 0 ? "+" : ""}{p.setDiff}</td><td>{p.gameDiff > 0 ? "+" : ""}{p.gameDiff}</td>
+                    <td>{p.played}</td><td>{p.wins}</td><td>{p.winPct}%</td><td>{p.successfulChallenges}</td><td>{p.successfulDefences}</td><td>{p.setDiff > 0 ? "+" : ""}{p.setDiff}</td><td>{p.gameDiff > 0 ? "+" : ""}{p.gameDiff}</td>
                     <td><div className="formStrip analyticsForm">{p.form.map((x, i) => <span key={i} className={x === "W" ? "formWin" : "formLoss"}>{x}</span>)}</div></td>
                     <td>{p.bestStreak}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="analyticsBox analyticsTableBox">
+        <div className="analyticsBoxTitle">Head to head</div>
+        {analytics.headToHead.length === 0 ? <div className="hint analyticsEmpty">Head-to-head records appear once two players have met.</div> : (
+          <div className="tableWrap">
+            <table className="table analyticsTable h2hTable">
+              <thead><tr><th>Players</th><th>Meetings</th><th>Record</th><th>Leader</th><th>Latest result</th></tr></thead>
+              <tbody>
+                {analytics.headToHead.map((row) => (
+                  <tr key={row.key}>
+                    <td><strong>{row.playerAName}</strong> vs <strong>{row.playerBName}</strong></td>
+                    <td>{row.meetings}</td>
+                    <td>{row.playerAWins}-{row.playerBWins}</td>
+                    <td>{row.leader}</td>
+                    <td>{row.latestWinner} beat {row.latestLoser} {row.latestScore}</td>
                   </tr>
                 ))}
               </tbody>
@@ -911,13 +933,45 @@ export default function App() {
         return won ? "W" : "L";
       });
       const wins = results.filter((x) => x === "W").length;
+      const successfulChallenges = pm.filter((m) => m.challengerPid === p.pid && m.winnerId === "p1").length;
+      const successfulDefences = pm.filter((m) => m.opponentPid === p.pid && m.winnerId === "p2").length;
       return {
         pid: p.pid, name: p.name, position: p.position, played: pm.length, wins,
         winPct: pm.length ? Math.round((wins / pm.length) * 100) : 0,
+        successfulChallenges, successfulDefences,
         setDiff: p.setDiff || 0, gameDiff: p.gameDiff || 0,
         form: results.slice(-5).reverse(), bestStreak,
       };
     }).filter((p) => p.played > 0).sort((a, b) => b.wins - a.wins || b.winPct - a.winPct || b.gameDiff - a.gameDiff || a.position - b.position);
+
+    const playerNameByPid = new Map(calculatedPlayers.map((p) => [p.pid, String(p.name || "").trim() || "Unknown"]));
+    const h2hMap = new Map();
+    for (const m of realMatches) {
+      const pids = [m.challengerPid, m.opponentPid].sort();
+      const key = pids.join("__");
+      if (!pids[0] || !pids[1] || pids[0] === pids[1]) continue;
+      const existing = h2hMap.get(key) || { key, playerAPid: pids[0], playerBPid: pids[1], playerAWins: 0, playerBWins: 0, matches: [] };
+      const winnerPid = m.winnerId === "p1" ? m.challengerPid : m.opponentPid;
+      if (winnerPid === existing.playerAPid) existing.playerAWins += 1;
+      else if (winnerPid === existing.playerBPid) existing.playerBWins += 1;
+      existing.matches.push(m);
+      h2hMap.set(key, existing);
+    }
+    const headToHead = [...h2hMap.values()].map((row) => {
+      const latest = [...row.matches].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)))[0];
+      const latestWinnerPid = latest.winnerId === "p1" ? latest.challengerPid : latest.opponentPid;
+      const latestLoserPid = latestWinnerPid === latest.challengerPid ? latest.opponentPid : latest.challengerPid;
+      const playerAName = playerNameByPid.get(row.playerAPid) || "Unknown";
+      const playerBName = playerNameByPid.get(row.playerBPid) || "Unknown";
+      return {
+        key: row.key, playerAName, playerBName, meetings: row.matches.length,
+        playerAWins: row.playerAWins, playerBWins: row.playerBWins,
+        leader: row.playerAWins === row.playerBWins ? "Tied" : (row.playerAWins > row.playerBWins ? playerAName : playerBName),
+        latestWinner: playerNameByPid.get(latestWinnerPid) || "Unknown",
+        latestLoser: playerNameByPid.get(latestLoserPid) || "Unknown",
+        latestScore: formatScoreForPlayer(latest.score, latestWinnerPid === latest.challengerPid),
+      };
+    }).sort((a, b) => b.meetings - a.meetings || a.playerAName.localeCompare(b.playerAName) || a.playerBName.localeCompare(b.playerBName));
 
     return {
       activePlayers: namedActive.length,
@@ -929,6 +983,7 @@ export default function App() {
       monthly: seasonMonths.map(([key, label]) => ({ key, label, matches: monthlyCounts.get(key) || 0 })),
       surfaces: [...surfaceCounts.entries()].map(([surface, count]) => ({ surface, matches: count })).filter((x) => x.matches > 0 || SURFACES.includes(x.surface)),
       playerRows,
+      headToHead,
     };
   }, [matchesView, calculatedPlayers, activeSeason]);
 
@@ -2512,7 +2567,9 @@ const css = `
   .barValue { text-align: right; font-size: 12px; font-weight: 850; }
   .analyticsTableBox { padding: 0; overflow: hidden; }
   .analyticsTableBox > .analyticsBoxTitle { padding: 14px 14px 0; }
-  .analyticsTable { min-width: 760px; }
+  .analyticsTable { min-width: 980px; }
+  .h2hTable { min-width: 720px; }
+  .analyticsEmpty { padding: 0 14px 14px; }
   .analyticsPosition { font-size: 11px; color: rgba(255,255,255,0.58); margin-top: 2px; }
   .analyticsForm { min-height: 22px; justify-content: flex-start; }
 
