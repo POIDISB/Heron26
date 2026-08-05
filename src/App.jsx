@@ -225,9 +225,87 @@ function computeFromSets(sets) {
   return { p1Sets, p2Sets, p1Games, p2Games };
 }
 
+
+function seasonMonthColumns(season) {
+  if (!season?.start_date || !season?.end_date) return [
+    { key: "apr", label: "Apr Matches" }, { key: "may", label: "May Matches" },
+    { key: "jun", label: "Jun Matches" }, { key: "jul", label: "Jul Matches" },
+  ];
+  const start = new Date(`${season.start_date}T00:00:00`);
+  const end = new Date(`${season.end_date}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+  const out = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cursor <= end && out.length < 12) {
+    const key = `${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,"0")}`;
+    out.push({ key, label: `${cursor.toLocaleDateString("en-GB", { month: "short" })} Matches`, monthIndex: cursor.getMonth(), year: cursor.getFullYear() });
+    cursor.setMonth(cursor.getMonth()+1);
+  }
+  return out;
+}
+
+function reconstructInitialPlayers(players, matches) {
+  let initial = players.map((p) => ({ ...p }));
+  const ordered = [...matches]
+    .filter((m) => m.ladderMoveApplied)
+    .sort((a,b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
+  for (const m of ordered) initial = reverseLadderMove(initial, m.challengerPid, m.challengerStartPos, m.opponentStartPos);
+  return initial;
+}
+
+function computeNumberOneStats(players, matches, season, nowMs = Date.now()) {
+  const result = new Map();
+  const ensure = (pid) => { if (!result.has(pid)) result.set(pid, { daysAtOne: 0, numberOneDefences: 0 }); return result.get(pid); };
+  if (!season?.start_date || !season?.end_date) return result;
+  const start = new Date(`${season.start_date}T00:00:00`);
+  const end = new Date(`${season.end_date}T23:59:59`);
+  const stop = new Date(Math.min(end.getTime(), nowMs));
+  if (Number.isNaN(start.getTime()) || stop < start) return result;
+  const initial = reconstructInitialPlayers(players, matches);
+  let leaderPid = initial.find((p) => p.position === 1)?.pid || null;
+  let cursor = start;
+  const ordered = [...matches].filter((m) => !String(m.score||"").startsWith("ADMIN:")).sort((a,b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
+  for (const m of ordered) {
+    const when = new Date(`${m.date}T12:00:00`);
+    if (Number.isNaN(when.getTime()) || when < start || when > stop) continue;
+    if (leaderPid) ensure(leaderPid).daysAtOne += Math.max(0, (when - cursor) / 86400000);
+    if (m.opponentStartPos === 1 && m.opponentPid === leaderPid && m.winnerId === "p2") ensure(leaderPid).numberOneDefences += 1;
+    if (m.ladderMoveApplied && m.opponentStartPos === 1 && m.winnerId === "p1") leaderPid = m.challengerPid;
+    cursor = when;
+  }
+  if (leaderPid) ensure(leaderPid).daysAtOne += Math.max(0, (stop - cursor) / 86400000);
+  for (const value of result.values()) value.daysAtOne = Math.round(value.daysAtOne);
+  return result;
+}
+
+function summarizeMatchups(matchRows, playerPid) {
+  const map = new Map();
+  let biggestUpset = null;
+  for (const m of matchRows) {
+    if (String(m.score||"").startsWith("ADMIN:")) continue;
+    const involved = m.challengerPid === playerPid || m.opponentPid === playerPid;
+    if (!involved) continue;
+    const isChallenger = m.challengerPid === playerPid;
+    const didWin = (isChallenger && m.winnerId === "p1") || (!isChallenger && m.winnerId === "p2");
+    const opponentName = isChallenger ? m.opponentName : m.challengerName;
+    const key = String(opponentName||"Unknown").trim().toLowerCase();
+    const row = map.get(key) || { name: opponentName || "Unknown", played: 0, wins: 0, losses: 0 };
+    row.played += 1; didWin ? row.wins++ : row.losses++; map.set(key,row);
+    if (didWin && isChallenger) {
+      const gap = Math.max(0, asNumber(m.challengerStartPos,0) - asNumber(m.opponentStartPos,0));
+      if (!biggestUpset || gap > biggestUpset.gap) biggestUpset = { gap, opponent: opponentName || "Unknown", score: m.score, date: m.date, from: m.challengerStartPos, to: m.opponentStartPos };
+    }
+  }
+  const rows=[...map.values()].filter(x=>x.played>0).map(x=>({...x, winPct: Math.round((x.wins/x.played)*100)}));
+  const best=[...rows].sort((a,b)=>b.winPct-a.winPct || b.played-a.played || b.wins-a.wins)[0] || null;
+  const worst=[...rows].sort((a,b)=>a.winPct-b.winPct || b.played-a.played || b.losses-a.losses)[0] || null;
+  return { biggestUpset, best, worst };
+}
+
 const COLS = [
   { key: "position", label: "Pos" },
   { key: "name", label: "Name" },
+  { key: "ladderProgress", label: "Ladder Progress" },
   { key: "matchesPlayed", label: "Matches Played" },
   { key: "matchesWon", label: "Matches Won" },
   { key: "setsWon", label: "Sets Won" },
@@ -236,15 +314,11 @@ const COLS = [
   { key: "gamesWon", label: "Games Won" },
   { key: "gamesLost", label: "Games Lost" },
   { key: "gameDiff", label: "Game Diff" },
-  { key: "apr", label: "Apr Matches" },
-  { key: "may", label: "May Matches" },
-  { key: "jun", label: "Jun Matches" },
-  { key: "jul", label: "Jul Matches" },
 ];
 
 function valueForColumn(p, colKey) {
   if (colKey === "name") return String(p.name || "").toLowerCase();
-  return p[colKey];
+  return p[colKey] ?? 0;
 }
 
 function compareByColumn(a, b, colKey, dir) {
@@ -526,6 +600,10 @@ function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
                     <td>{p.played}</td><td>{p.wins}</td><td>{p.winPct}%</td><td>{p.successfulChallenges}</td><td>{p.successfulDefences}</td><td>{p.setDiff > 0 ? "+" : ""}{p.setDiff}</td><td>{p.gameDiff > 0 ? "+" : ""}{p.gameDiff}</td>
                     <td><div className="formStrip analyticsForm">{p.form.map((x, i) => <span key={i} className={x === "W" ? "formWin" : "formLoss"}>{x}</span>)}</div></td>
                     <td>{p.bestStreak}</td>
+                    <td>{p.daysAtOne}</td><td>{p.numberOneDefences}</td>
+                    <td>{p.biggestUpset ? `#${p.biggestUpset.from} → #${p.biggestUpset.to} vs ${p.biggestUpset.opponent}` : "—"}</td>
+                    <td>{p.bestVs ? `${p.bestVs.name} (${p.bestVs.wins}–${p.bestVs.losses})` : "—"}</td>
+                    <td>{p.worstVs ? `${p.worstVs.name} (${p.worstVs.wins}–${p.worstVs.losses})` : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -650,6 +728,7 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
   let setsLost = 0;
   let gamesWon = 0;
   let gamesLost = 0;
+  let biggestUpset = null;
   const surfaceMap = new Map();
   const opponentMap = new Map();
   const seasonMap = new Map();
@@ -658,6 +737,10 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     const isChallenger = sameName(m.challenger_name);
     const didWin = (isChallenger && m.winner_id === "p1") || (!isChallenger && m.winner_id === "p2");
     const opponentName = String(isChallenger ? m.opponent_name : m.challenger_name).trim() || "Unknown";
+    if (didWin && isChallenger) {
+      const gap = Math.max(0, asNumber(m.challenger_start_pos, 0) - asNumber(m.opponent_start_pos, 0));
+      if (!biggestUpset || gap > biggestUpset.gap) biggestUpset = { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.challenger_start_pos, 0), to: asNumber(m.opponent_start_pos, 0) };
+    }
     const parsed = parseScore(String(m.score || ""));
     let ownSets = 0, oppSets = 0, ownGames = 0, oppGames = 0;
     if (parsed.valid) {
@@ -695,6 +778,17 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
   const playerRows = (playerRes.data || []).filter((p) => sameName(p.name));
   const positions = playerRows.map((p) => Number(p.position)).filter((n) => Number.isFinite(n) && n > 0);
   const seasonsPlayed = new Set([...careerMatches.map((m) => String(m.season_id || "")), ...playerRows.map((p) => String(p.season_id || ""))].filter(Boolean));
+  const matchupRows = [...opponentMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 }));
+  const bestVs = [...matchupRows].sort((a,b) => b.winPct-a.winPct || b.played-a.played || b.wins-a.wins)[0] || null;
+  const worstVs = [...matchupRows].sort((a,b) => a.winPct-b.winPct || b.played-a.played || b.losses-a.losses)[0] || null;
+  let daysAtOne = 0, numberOneDefences = 0;
+  for (const sid of seasonsPlayed) {
+    const season = seasonById.get(sid);
+    const seasonPlayers = (playerRes.data || []).filter((x) => String(x.season_id || "") === sid).map((x) => ({ pid: String(x.pid), name: String(x.name || ""), position: asNumber(x.position, 0) }));
+    const seasonMatches = (matchRes.data || []).filter((x) => String(x.season_id || "") === sid).map((x) => ({ id: String(x.id), date: String(x.date || ""), score: String(x.score || ""), challengerPid: String(x.challenger_pid || ""), opponentPid: String(x.opponent_pid || ""), winnerId: x.winner_id === "p1" ? "p1" : "p2", challengerStartPos: asNumber(x.challenger_start_pos,0), opponentStartPos: asNumber(x.opponent_start_pos,0), ladderMoveApplied: Boolean(x.ladder_move_applied) }));
+    const oneStats = computeNumberOneStats(seasonPlayers, seasonMatches, season, Date.now());
+    for (const pr of seasonPlayers.filter((x) => sameName(x.name))) { const v = oneStats.get(pr.pid); if (v) { daysAtOne += v.daysAtOne; numberOneDefences += v.numberOneDefences; } }
+  }
 
   return {
     name: playerName,
@@ -704,6 +798,11 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     winPct: normalized.length ? Math.round((wins / normalized.length) * 100) : 0,
     successfulChallenges,
     successfulDefences,
+    daysAtOne,
+    numberOneDefences,
+    biggestUpset,
+    bestVs,
+    worstVs,
     bestStreak,
     setsWon,
     setsLost,
@@ -712,7 +811,7 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     highestPosition: positions.length ? Math.min(...positions) : null,
     seasonsPlayed: seasonsPlayed.size,
     surfaces: [...surfaceMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => b.played - a.played),
-    headToHead: [...opponentMap.values()].sort((a, b) => b.played - a.played || b.wins - a.wins || a.name.localeCompare(b.name)),
+    headToHead: matchupRows.sort((a, b) => b.played - a.played || b.wins - a.wins || a.name.localeCompare(b.name)),
     seasons: [...seasonMap.values()].map((x) => ({ ...x, losses: x.played - x.wins, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))),
     recent: [...normalized].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id))).slice(0, 10),
   };
@@ -975,14 +1074,16 @@ export default function App() {
     [players, playerCount]
   );
 
+  const initialPlayers = useMemo(() => reconstructInitialPlayers(players, matches), [players, matches]);
+  const initialPositionByPid = useMemo(() => new Map(initialPlayers.map((p) => [p.pid, p.position])), [initialPlayers]);
   const calculatedPlayers = useMemo(
-    () =>
-      visiblePlayers.map((p) => ({
-        ...p,
-        setDiff: (p.setsWon || 0) - (p.setsLost || 0),
-        gameDiff: (p.gamesWon || 0) - (p.gamesLost || 0),
-      })),
-    [visiblePlayers]
+    () => visiblePlayers.map((p) => ({
+      ...p,
+      setDiff: (p.setsWon || 0) - (p.setsLost || 0),
+      gameDiff: (p.gamesWon || 0) - (p.gamesLost || 0),
+      ladderProgress: asNumber(initialPositionByPid.get(p.pid), p.position) - p.position,
+    })),
+    [visiblePlayers, initialPositionByPid]
   );
 
   const displayedPlayers = useMemo(() => {
@@ -1035,10 +1136,27 @@ export default function App() {
     setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid));
   }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
 
+  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
+
   const leaderboardTop3 = useMemo(() => {
     const named = calculatedPlayers.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim().length > 0);
     return [...named].sort((a, b) => a.position - b.position).slice(0, 3);
   }, [calculatedPlayers]);
+
+  const ladderMonthColumns = useMemo(() => seasonMonthColumns(activeSeason), [activeSeason]);
+  const monthlyPlayedByPid = useMemo(() => {
+    const map = new Map();
+    for (const m of matches) {
+      if (String(m.score || "").startsWith("ADMIN:")) continue;
+      const key = String(m.date || "").slice(0,7);
+      for (const pid of [m.challengerPid, m.opponentPid]) {
+        if (!map.has(pid)) map.set(pid, new Map());
+        const inner = map.get(pid); inner.set(key, (inner.get(key)||0)+1);
+      }
+    }
+    return map;
+  }, [matches]);
+  const topClimber = useMemo(() => [...calculatedPlayers].filter(p => !isWithdrawnPlayer(p) && String(p.name||"").trim()).sort((a,b)=>b.ladderProgress-a.ladderProgress || a.position-b.position)[0] || null, [calculatedPlayers]);
 
   const matchesView = useMemo(() => {
     const byPid = new Map(players.map((p) => [p.pid, p]));
@@ -1068,7 +1186,6 @@ export default function App() {
       });
   }, [matches, players, playerCount]);
 
-  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
   const seasonLabel = activeSeason?.name || "Season";
 
   const analytics = useMemo(() => {
@@ -2052,11 +2169,14 @@ export default function App() {
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful defences</div><div className="analyticsKpiValue">{currentStats.successfulDefences}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{currentStats.bestStreak}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Current position</div><div className="analyticsKpiValue">{selectedPlayer?.position >= 1 && selectedPlayer?.position <= playerCount ? `#${selectedPlayer.position}` : "—"}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{currentStats.daysAtOne}</div><div className="analyticsKpiSub">{currentStats.numberOneDefences} defence{currentStats.numberOneDefences === 1 ? "" : "s"}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest upset</div><div className="analyticsKpiValue smallKpiValue">{currentStats.biggestUpset ? `+${currentStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{currentStats.biggestUpset ? `vs ${currentStats.biggestUpset.opponent}` : "No challenge upset yet"}</div></div>
                   </div>
                   <div className="analyticsGrid">
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Season totals</div><div className="careerTotals"><div>Sets <strong>{currentStats.setsWon}–{currentStats.setsLost}</strong></div><div>Games <strong>{currentStats.gamesWon}–{currentStats.gamesLost}</strong></div><div>Set diff <strong>{currentStats.setsWon-currentStats.setsLost >= 0 ? "+" : ""}{currentStats.setsWon-currentStats.setsLost}</strong></div><div>Game diff <strong>{currentStats.gamesWon-currentStats.gamesLost >= 0 ? "+" : ""}{currentStats.gamesWon-currentStats.gamesLost}</strong></div></div></div>
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{currentStats.surfaces.length ? currentStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played-x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
                   </div>
+                  <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best record vs</div><div className="profileMatchup">{currentStats.bestVs ? <><strong>{currentStats.bestVs.name}</strong><span>{currentStats.bestVs.wins}–{currentStats.bestVs.losses} ({currentStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst record vs</div><div className="profileMatchup">{currentStats.worstVs ? <><strong>{currentStats.worstVs.name}</strong><span>{currentStats.worstVs.wins}–{currentStats.worstVs.losses} ({currentStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
                   <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Current-season head to head</div>{currentStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th><th>Win %</th></tr></thead><tbody>{currentStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.played-x.wins}</td><td>{x.played ? Math.round((x.wins/x.played)*100) : 0}%</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history this season.</div>}</div>
                 </div>
               ) : lifetimeLoading ? <div className="hint lifetimeStatus">Loading lifetime statistics…</div>
@@ -2071,6 +2191,8 @@ export default function App() {
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Successful defences</div><div className="analyticsKpiValue">{lifetimeStats.successfulDefences}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{lifetimeStats.bestStreak}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Highest position</div><div className="analyticsKpiValue">{lifetimeStats.highestPosition ? `#${lifetimeStats.highestPosition}` : "—"}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{lifetimeStats.daysAtOne}</div><div className="analyticsKpiSub">{lifetimeStats.numberOneDefences} defence{lifetimeStats.numberOneDefences === 1 ? "" : "s"}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest upset</div><div className="analyticsKpiValue smallKpiValue">{lifetimeStats.biggestUpset ? `+${lifetimeStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{lifetimeStats.biggestUpset ? `vs ${lifetimeStats.biggestUpset.opponent}` : "No challenge upset yet"}</div></div>
                     </div>
 
                     <div className="analyticsGrid">
@@ -2078,6 +2200,7 @@ export default function App() {
                       <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{lifetimeStats.surfaces.length ? lifetimeStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played - x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
                     </div>
 
+                    <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best career record vs</div><div className="profileMatchup">{lifetimeStats.bestVs ? <><strong>{lifetimeStats.bestVs.name}</strong><span>{lifetimeStats.bestVs.wins}–{lifetimeStats.bestVs.losses} ({lifetimeStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst career record vs</div><div className="profileMatchup">{lifetimeStats.worstVs ? <><strong>{lifetimeStats.worstVs.name}</strong><span>{lifetimeStats.worstVs.wins}–{lifetimeStats.worstVs.losses} ({lifetimeStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
                     <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Season by season</div><div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Season</th><th>Played</th><th>Record</th><th>Win %</th></tr></thead><tbody>{lifetimeStats.seasons.map((x) => <tr key={x.seasonId}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td><td>{x.winPct}%</td></tr>)}</tbody></table></div></div>
 
                     <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Lifetime head to head</div>{lifetimeStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th></tr></thead><tbody>{lifetimeStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history.</div>}</div>
@@ -2182,6 +2305,7 @@ export default function App() {
                 <div className="hint">Top 3 • {divisionLabel}</div>
               </div>
             </div>
+            {topClimber && topClimber.ladderProgress > 0 ? <div className="topClimberBanner"><span>🚀 Top climber</span><strong>{topClimber.name}</strong><span>+{topClimber.ladderProgress} places</span></div> : null}
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
           </div>
         </div>
@@ -2207,7 +2331,7 @@ export default function App() {
                   <table className="table ladderTable">
                     <thead>
                       <tr>
-                        {COLS.map((c) => <th key={c.key}><button className="thBtn" onClick={() => toggleSort(c.key)}>{c.label}{sortIndicator(c.key)}</button></th>)}
+                        {[...COLS, ...ladderMonthColumns].map((c) => <th key={c.key}><button className="thBtn" onClick={() => toggleSort(c.key)}>{c.label}{sortIndicator(c.key)}</button></th>)}
                       </tr>
                     </thead>
                     <tbody>
@@ -2221,6 +2345,7 @@ export default function App() {
                               <input className="textInput" value={p.name} placeholder="Player name" onChange={(e) => updatePlayer(p.pid, "name", e.target.value)} />
                             )}
                           </td>
+                          <td className={p.ladderProgress > 0 ? "progressPositive" : p.ladderProgress < 0 ? "progressNegative" : "progressNeutral"}>{p.ladderProgress > 0 ? `+${p.ladderProgress}` : p.ladderProgress}</td>
                           <td><StatCell locked={locked} value={p.matchesPlayed} onChange={(v) => updatePlayer(p.pid, "matchesPlayed", v)} /></td>
                           <td><StatCell locked={locked} value={p.matchesWon} onChange={(v) => updatePlayer(p.pid, "matchesWon", v)} /></td>
                           <td><StatCell locked={locked} value={p.setsWon} onChange={(v) => updatePlayer(p.pid, "setsWon", v)} /></td>
@@ -2229,10 +2354,7 @@ export default function App() {
                           <td><StatCell locked={locked} value={p.gamesWon} onChange={(v) => updatePlayer(p.pid, "gamesWon", v)} /></td>
                           <td><StatCell locked={locked} value={p.gamesLost} onChange={(v) => updatePlayer(p.pid, "gamesLost", v)} /></td>
                           <td className="diff">{p.gameDiff}</td>
-                          <td><StatCell locked={locked} value={p.apr} onChange={(v) => updatePlayer(p.pid, "apr", v)} /></td>
-                          <td><StatCell locked={locked} value={p.may} onChange={(v) => updatePlayer(p.pid, "may", v)} /></td>
-                          <td><StatCell locked={locked} value={p.jun} onChange={(v) => updatePlayer(p.pid, "jun", v)} /></td>
-                          <td><StatCell locked={locked} value={p.jul} onChange={(v) => updatePlayer(p.pid, "jul", v)} /></td>
+                          {ladderMonthColumns.map((c) => <td key={c.key}><div className="numText">{monthlyPlayedByPid.get(p.pid)?.get(c.key) || 0}</div></td>)}
                         </tr>
                       ))}
                     </tbody>
@@ -2950,4 +3072,11 @@ const css = `
       display: block !important;
     }
   }
+  .topClimberBanner { display:flex; align-items:center; justify-content:center; gap:12px; padding:10px 14px; margin-bottom:12px; border:1px solid rgba(34,197,94,.35); background:rgba(34,197,94,.09); border-radius:12px; }
+  .progressPositive { color:#4ade80; font-weight:800; }
+  .progressNegative { color:#f87171; font-weight:800; }
+  .progressNeutral { color:var(--muted); font-weight:700; }
+  .smallKpiValue { font-size:20px !important; }
+  .profileMatchup { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+
 `;
