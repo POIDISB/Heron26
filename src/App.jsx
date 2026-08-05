@@ -382,6 +382,80 @@ function MobileSummary({ divisionLabel, playerCount, totalMatches, top3 }) {
 function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
   const maxMonth = Math.max(1, ...analytics.monthly.map((x) => x.matches));
   const maxSurface = Math.max(1, ...analytics.surfaces.map((x) => x.matches));
+  const [playerSort, setPlayerSort] = useState({ key: "played", dir: "desc" });
+  const [h2hSort, setH2hSort] = useState({ key: "meetings", dir: "desc" });
+
+  function changeSort(setter, key, defaultDir = "desc") {
+    setter((prev) => prev.key === key
+      ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+      : { key, dir: defaultDir });
+  }
+
+  function textCompare(a, b) {
+    return String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base", numeric: true });
+  }
+
+  function playerValue(row, key) {
+    if (key === "form") return row.form.reduce((score, result, index) => score + (result === "W" ? (5 - index) : 0), 0);
+    return row[key];
+  }
+
+  const sortedPlayers = useMemo(() => {
+    const rows = [...analytics.playerRows];
+    const { key, dir } = playerSort;
+    const mul = dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = playerValue(a, key);
+      const bv = playerValue(b, key);
+      let result = 0;
+      if (typeof av === "number" && typeof bv === "number") result = av - bv;
+      else result = textCompare(av, bv);
+      if (result !== 0) return result * mul;
+
+      // Sensible tie-breaks: identical percentages favour the larger sample,
+      // then total wins, then ladder position.
+      if (key === "winPct" && a.played !== b.played) return (a.played - b.played) * mul;
+      if (key !== "wins" && a.wins !== b.wins) return (a.wins - b.wins) * mul;
+      if (a.played !== b.played) return (a.played - b.played) * mul;
+      return a.position - b.position;
+    });
+    return rows;
+  }, [analytics.playerRows, playerSort]);
+
+  function h2hValue(row, key) {
+    if (key === "players") return `${row.playerAName} ${row.playerBName}`;
+    if (key === "record") return Math.max(row.playerAWins, row.playerBWins) / Math.max(1, row.meetings);
+    if (key === "latest") return row.latestDate || "";
+    return row[key];
+  }
+
+  const sortedHeadToHead = useMemo(() => {
+    const rows = [...analytics.headToHead];
+    const { key, dir } = h2hSort;
+    const mul = dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = h2hValue(a, key);
+      const bv = h2hValue(b, key);
+      let result = 0;
+      if (typeof av === "number" && typeof bv === "number") result = av - bv;
+      else result = textCompare(av, bv);
+      if (result !== 0) return result * mul;
+      if (a.meetings !== b.meetings) return (a.meetings - b.meetings) * mul;
+      return textCompare(`${a.playerAName} ${a.playerBName}`, `${b.playerAName} ${b.playerBName}`);
+    });
+    return rows;
+  }, [analytics.headToHead, h2hSort]);
+
+  function SortHeader({ label, sortState, sortKey, onSort, defaultDir = "desc" }) {
+    const active = sortState.key === sortKey;
+    return (
+      <th>
+        <button type="button" className="thBtn analyticsSortBtn" onClick={() => onSort(sortKey, defaultDir)}>
+          {label}{active ? (sortState.dir === "asc" ? " ▲" : " ▼") : ""}
+        </button>
+      </th>
+    );
+  }
 
   return (
     <div className="analyticsPanel">
@@ -429,13 +503,24 @@ function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
       </div>
 
       <div className="analyticsBox analyticsTableBox">
-        <div className="analyticsBoxTitle">Player performance</div>
+        <div className="analyticsBoxTitle">Player performance <span className="analyticsSortHint">Click any heading to sort</span></div>
         {analytics.playerRows.length === 0 ? <div className="hint analyticsEmpty">Add completed matches to populate analytics.</div> : (
           <div className="tableWrap">
             <table className="table analyticsTable">
-              <thead><tr><th>Player</th><th>P</th><th>W</th><th>Win %</th><th>Successful challenges</th><th>Successful defences</th><th>Set diff</th><th>Game diff</th><th>Current form</th><th>Best streak</th></tr></thead>
+              <thead><tr>
+                <SortHeader label="Player" sortState={playerSort} sortKey="name" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} defaultDir="asc" />
+                <SortHeader label="P" sortState={playerSort} sortKey="played" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="W" sortState={playerSort} sortKey="wins" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Win %" sortState={playerSort} sortKey="winPct" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Successful challenges" sortState={playerSort} sortKey="successfulChallenges" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Successful defences" sortState={playerSort} sortKey="successfulDefences" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Set diff" sortState={playerSort} sortKey="setDiff" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Game diff" sortState={playerSort} sortKey="gameDiff" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Current form" sortState={playerSort} sortKey="form" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+                <SortHeader label="Best streak" sortState={playerSort} sortKey="bestStreak" onSort={(key, dir) => changeSort(setPlayerSort, key, dir)} />
+              </tr></thead>
               <tbody>
-                {analytics.playerRows.map((p) => (
+                {sortedPlayers.map((p) => (
                   <tr key={p.pid}>
                     <td><strong>{p.name}</strong><div className="analyticsPosition">Current #{p.position}</div></td>
                     <td>{p.played}</td><td>{p.wins}</td><td>{p.winPct}%</td><td>{p.successfulChallenges}</td><td>{p.successfulDefences}</td><td>{p.setDiff > 0 ? "+" : ""}{p.setDiff}</td><td>{p.gameDiff > 0 ? "+" : ""}{p.gameDiff}</td>
@@ -450,13 +535,19 @@ function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
       </div>
 
       <div className="analyticsBox analyticsTableBox">
-        <div className="analyticsBoxTitle">Head to head</div>
+        <div className="analyticsBoxTitle">Head to head <span className="analyticsSortHint">Click any heading to sort</span></div>
         {analytics.headToHead.length === 0 ? <div className="hint analyticsEmpty">Head-to-head records appear once two players have met.</div> : (
           <div className="tableWrap">
             <table className="table analyticsTable h2hTable">
-              <thead><tr><th>Players</th><th>Meetings</th><th>Record</th><th>Leader</th><th>Latest result</th></tr></thead>
+              <thead><tr>
+                <SortHeader label="Players" sortState={h2hSort} sortKey="players" onSort={(key, dir) => changeSort(setH2hSort, key, dir)} defaultDir="asc" />
+                <SortHeader label="Meetings" sortState={h2hSort} sortKey="meetings" onSort={(key, dir) => changeSort(setH2hSort, key, dir)} />
+                <SortHeader label="Record" sortState={h2hSort} sortKey="record" onSort={(key, dir) => changeSort(setH2hSort, key, dir)} />
+                <SortHeader label="Leader" sortState={h2hSort} sortKey="leader" onSort={(key, dir) => changeSort(setH2hSort, key, dir)} defaultDir="asc" />
+                <SortHeader label="Latest result" sortState={h2hSort} sortKey="latest" onSort={(key, dir) => changeSort(setH2hSort, key, dir)} />
+              </tr></thead>
               <tbody>
-                {analytics.headToHead.map((row) => (
+                {sortedHeadToHead.map((row) => (
                   <tr key={row.key}>
                     <td><strong>{row.playerAName}</strong> vs <strong>{row.playerBName}</strong></td>
                     <td>{row.meetings}</td>
@@ -1068,6 +1159,7 @@ export default function App() {
         leader: row.playerAWins === row.playerBWins ? "Tied" : (row.playerAWins > row.playerBWins ? playerAName : playerBName),
         latestWinner: playerNameByPid.get(latestWinnerPid) || "Unknown",
         latestLoser: playerNameByPid.get(latestLoserPid) || "Unknown",
+        latestDate: String(latest.date || ""),
         latestScore: formatScoreForPlayer(latest.score, latestWinnerPid === latest.challengerPid),
       };
     }).sort((a, b) => b.meetings - a.meetings || a.playerAName.localeCompare(b.playerAName) || a.playerBName.localeCompare(b.playerBName));
@@ -2756,6 +2848,9 @@ const css = `
   .barFill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, rgba(96,165,250,0.75), rgba(167,139,250,0.95)); }
   .barFill.alt { background: linear-gradient(90deg, rgba(45,212,191,0.75), rgba(96,165,250,0.95)); }
   .barValue { text-align: right; font-size: 12px; font-weight: 850; }
+  .analyticsSortHint { margin-left: 8px; font-size: 11px; font-weight: 500; color: var(--muted); }
+  .analyticsSortBtn { width: 100%; justify-content: flex-start; white-space: nowrap; }
+  .analyticsSortBtn:hover { color: #fff; }
   .analyticsTableBox { padding: 0; overflow: hidden; }
   .analyticsTableBox > .analyticsBoxTitle { padding: 14px 14px 0; }
   .analyticsTable { min-width: 980px; }
