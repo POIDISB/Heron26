@@ -22,11 +22,6 @@ const DIVISIONS = [
   { key: "womens", label: "Women's" },
 ];
 
-const DROP_PERIODS = [
-  { key: "apr26_may31", label: "April 26th – May 31st", start: "2026-04-26", end: "2026-05-31" },
-  { key: "jun", label: "June 1st – June 30th", start: "2026-06-01", end: "2026-06-30" },
-  { key: "jul", label: "July 1st – July 31st", start: "2026-07-01", end: "2026-07-31" },
-];
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -58,6 +53,31 @@ function formatDateISO(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function seasonDropPeriods(season) {
+  if (!season?.start_date || !season?.end_date) return [];
+  const start = new Date(`${season.start_date}T12:00:00`);
+  const end = new Date(`${season.end_date}T12:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return [];
+
+  const periods = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1, 12);
+  while (cursor <= end && periods.length < 12) {
+    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1, 12);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 12);
+    const periodStart = monthStart < start ? start : monthStart;
+    const periodEnd = monthEnd > end ? end : monthEnd;
+    const label = `${periodStart.toLocaleDateString("en-GB", { day: "numeric", month: "long" })} – ${periodEnd.toLocaleDateString("en-GB", { day: "numeric", month: "long" })}`;
+    periods.push({
+      key: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+      label,
+      start: formatDateISO(periodStart),
+      end: formatDateISO(periodEnd),
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return periods;
+}
+
 function monthKeyFromDateISO(dateISO) {
   const d = new Date(dateISO);
   if (Number.isNaN(d.getTime())) return null;
@@ -67,6 +87,9 @@ function monthKeyFromDateISO(dateISO) {
   if (m === 5) return "jun";
   if (m === 6) return "jul";
   if (m === 7) return "aug";
+  if (m === 8) return "sep";
+  if (m === 9) return "oct";
+  if (m === 10) return "nov";
   return null;
 }
 
@@ -87,6 +110,9 @@ function createEmptyPlayer(position, division) {
     jun: 0,
     jul: 0,
     aug: 0,
+    sep: 0,
+    oct: 0,
+    nov: 0,
     withdrawn: false,
   };
 }
@@ -293,7 +319,7 @@ function summarizeMatchups(matchRows, playerPid) {
     row.played += 1; didWin ? row.wins++ : row.losses++; map.set(key,row);
     if (didWin && isChallenger) {
       const gap = Math.max(0, asNumber(m.challengerStartPos,0) - asNumber(m.opponentStartPos,0));
-      if (!biggestUpset || gap > biggestUpset.gap) biggestUpset = { gap, opponent: opponentName || "Unknown", score: m.score, date: m.date, from: m.challengerStartPos, to: m.opponentStartPos };
+      if (!biggestUpset || gap > biggestUpset.gap || (gap === biggestUpset.gap && Number(m.opponentStartPos) < Number(biggestUpset.to))) biggestUpset = { gap, opponent: opponentName || "Unknown", score: m.score, date: m.date, from: m.challengerStartPos, to: m.opponentStartPos };
     }
   }
   const rows=[...map.values()].filter(x=>x.played>0).map(x=>({...x, winPct: Math.round((x.wins/x.played)*100)}));
@@ -739,7 +765,7 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     const opponentName = String(isChallenger ? m.opponent_name : m.challenger_name).trim() || "Unknown";
     if (didWin && isChallenger) {
       const gap = Math.max(0, asNumber(m.challenger_start_pos, 0) - asNumber(m.opponent_start_pos, 0));
-      if (!biggestUpset || gap > biggestUpset.gap) biggestUpset = { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.challenger_start_pos, 0), to: asNumber(m.opponent_start_pos, 0) };
+      if (!biggestUpset || gap > biggestUpset.gap || (gap === biggestUpset.gap && asNumber(m.opponent_start_pos, 999) < asNumber(biggestUpset.to, 999))) biggestUpset = { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.challenger_start_pos, 0), to: asNumber(m.opponent_start_pos, 0) };
     }
     const parsed = parseScore(String(m.score || ""));
     let ownSets = 0, oppSets = 0, ownGames = 0, oppGames = 0;
@@ -1109,13 +1135,17 @@ export default function App() {
     [players, playerCount]
   );
 
+  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
+  const dropPeriods = useMemo(() => seasonDropPeriods(activeSeason), [activeSeason]);
+
   const selectedDropPeriod = useMemo(
-    () => DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0],
-    [dropPeriodKey]
+    () => dropPeriods.find((p) => p.key === dropPeriodKey) || dropPeriods[0] || null,
+    [dropPeriodKey, dropPeriods]
   );
 
   const eligibleDropPlayers = useMemo(() => {
-    const period = DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0];
+    const period = selectedDropPeriod;
+    if (!period) return [];
 
     return players
       .filter((p) => p.position >= 1 && p.position <= playerCount)
@@ -1130,13 +1160,15 @@ export default function App() {
         });
       })
       .sort((a, b) => a.position - b.position);
-  }, [players, matches, playerCount, dropPeriodKey]);
+  }, [players, matches, playerCount, selectedDropPeriod]);
+
+  useEffect(() => {
+    if (dropPeriods.length && !dropPeriods.some((p) => p.key === dropPeriodKey)) setDropPeriodKey(dropPeriods[0].key);
+  }, [dropPeriods, dropPeriodKey]);
 
   useEffect(() => {
     setSelectedDropPids(eligibleDropPlayers.map((p) => p.pid));
   }, [dropPeriodKey, activeDivision, eligibleDropPlayers.length]);
-
-  const activeSeason = seasons.find((x) => String(x.id) === String(activeSeasonId)) || null;
 
   const leaderboardTop3 = useMemo(() => {
     const named = calculatedPlayers.filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim().length > 0);
@@ -1819,7 +1851,8 @@ export default function App() {
     setError("");
     if (locked) return setError("Locked: Admin unlock required.");
 
-    const period = DROP_PERIODS.find((p) => p.key === dropPeriodKey) || DROP_PERIODS[0];
+    const period = selectedDropPeriod;
+    if (!period) return setError("This ladder season does not have valid start and end dates.");
     const chosenPlayers = selectedDropPids
       .map((pid) => players.find((p) => p.pid === pid))
       .filter(Boolean)
@@ -1968,7 +2001,7 @@ export default function App() {
 
   const pinHint =
     pinPurpose === "unlock"
-      ? "Unlock editing for this session (viewers remain read-only)."
+      ? "Unlock editing for this ladder season (viewers remain read-only)."
       : pinPurpose === "add"
       ? "PIN required right before saving this match."
       : pinPurpose === "delete"
@@ -2024,18 +2057,29 @@ export default function App() {
   }
 
   async function createSeason() {
-    const name = window.prompt("New season name", "August–October 2026"); if (!name) return;
+    const name = window.prompt("New ladder season name", "August–November 2026"); if (!name) return;
     const startDate = window.prompt("Start date (YYYY-MM-DD)", "2026-08-01"); if (!startDate) return;
-    const endDate = window.prompt("End date (YYYY-MM-DD)", "2026-10-31"); if (!endDate) return;
+    const endDate = window.prompt("End date (YYYY-MM-DD)", "2026-11-30"); if (!endDate) return;
     const pin = window.prompt("Admin PIN"); if (!pin) return;
     try { const result = await adminAction(pin, "createSeason", { name, startDate, endDate }); const meta = await fetchSeasonMeta(); setSeasons(meta.seasons); setActiveSeasonId(result.season.id); }
     catch (e) { setError(String(e?.message || e)); }
   }
 
-  async function renameSeason() {
-    if (!activeSeason) return; const name = window.prompt("Season name", activeSeason.name); if (!name || name === activeSeason.name) return; const pin = window.prompt("Admin PIN"); if (!pin) return;
-    try { await adminAction(pin, "renameSeason", { seasonId: activeSeasonId, name }); const meta = await fetchSeasonMeta(); setSeasons(meta.seasons); }
-    catch (e) { setError(String(e?.message || e)); }
+  async function editSeason() {
+    if (!activeSeason) return;
+    const name = window.prompt("Ladder season name", activeSeason.name || "");
+    if (!name) return;
+    const startDate = window.prompt("Start date (YYYY-MM-DD)", activeSeason.start_date || "");
+    if (!startDate) return;
+    const endDate = window.prompt("End date (YYYY-MM-DD)", activeSeason.end_date || "");
+    if (!endDate) return;
+    const pin = window.prompt("Admin PIN");
+    if (!pin) return;
+    try {
+      await adminAction(pin, "updateSeason", { seasonId: activeSeasonId, name, startDate, endDate });
+      const meta = await fetchSeasonMeta();
+      setSeasons(meta.seasons);
+    } catch (e) { setError(String(e?.message || e)); }
   }
 
   async function setPublicDefault() {
@@ -2170,7 +2214,7 @@ export default function App() {
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{currentStats.bestStreak}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Current position</div><div className="analyticsKpiValue">{selectedPlayer?.position >= 1 && selectedPlayer?.position <= playerCount ? `#${selectedPlayer.position}` : "—"}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{currentStats.daysAtOne}</div><div className="analyticsKpiSub">{currentStats.numberOneDefences} defence{currentStats.numberOneDefences === 1 ? "" : "s"}</div></div>
-                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest upset</div><div className="analyticsKpiValue smallKpiValue">{currentStats.biggestUpset ? `+${currentStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{currentStats.biggestUpset ? `vs ${currentStats.biggestUpset.opponent}` : "No challenge upset yet"}</div></div>
+                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest win</div><div className="analyticsKpiValue smallKpiValue">{currentStats.biggestUpset ? `+${currentStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{currentStats.biggestUpset ? `vs ${currentStats.biggestUpset.opponent}` : "No successful challenge yet"}</div></div>
                   </div>
                   <div className="analyticsGrid">
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Season totals</div><div className="careerTotals"><div>Sets <strong>{currentStats.setsWon}–{currentStats.setsLost}</strong></div><div>Games <strong>{currentStats.gamesWon}–{currentStats.gamesLost}</strong></div><div>Set diff <strong>{currentStats.setsWon-currentStats.setsLost >= 0 ? "+" : ""}{currentStats.setsWon-currentStats.setsLost}</strong></div><div>Game diff <strong>{currentStats.gamesWon-currentStats.gamesLost >= 0 ? "+" : ""}{currentStats.gamesWon-currentStats.gamesLost}</strong></div></div></div>
@@ -2192,7 +2236,7 @@ export default function App() {
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{lifetimeStats.bestStreak}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Highest position</div><div className="analyticsKpiValue">{lifetimeStats.highestPosition ? `#${lifetimeStats.highestPosition}` : "—"}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{lifetimeStats.daysAtOne}</div><div className="analyticsKpiSub">{lifetimeStats.numberOneDefences} defence{lifetimeStats.numberOneDefences === 1 ? "" : "s"}</div></div>
-                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest upset</div><div className="analyticsKpiValue smallKpiValue">{lifetimeStats.biggestUpset ? `+${lifetimeStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{lifetimeStats.biggestUpset ? `vs ${lifetimeStats.biggestUpset.opponent}` : "No challenge upset yet"}</div></div>
+                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest win</div><div className="analyticsKpiValue smallKpiValue">{lifetimeStats.biggestUpset ? `+${lifetimeStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{lifetimeStats.biggestUpset ? `vs ${lifetimeStats.biggestUpset.opponent}` : "No successful challenge yet"}</div></div>
                     </div>
 
                     <div className="analyticsGrid">
@@ -2500,7 +2544,7 @@ export default function App() {
                     <div className="cardTitle">Drop 3 places</div>
                     <div className="hint">Choose a period, review players with no matches in that window, then drop them in one batch.</div>
                     <select className="textInput tallOnMobile" value={dropPeriodKey} onChange={(e) => setDropPeriodKey(e.target.value)}>
-                      {DROP_PERIODS.map((period) => (
+                      {dropPeriods.map((period) => (
                         <option key={period.key} value={period.key}>{period.label}</option>
                       ))}
                     </select>
@@ -2567,11 +2611,11 @@ export default function App() {
 
                 <div className="sep" />
                 <div className="managementBox" style={{ marginBottom: 12 }}>
-                  <div className="cardTitle">Season management</div>
-                  <div className="hint">Current: {seasonLabel}. Renaming is safe because data uses the permanent season ID.</div>
+                  <div className="cardTitle">Ladder Season management</div>
+                  <div className="hint">Current: {seasonLabel}. You can safely edit its name and dates because its permanent ladder-season ID does not change.</div>
                   <div className="row">
-                    <button className="btn" onClick={createSeason}>Create season</button>
-                    <button className="btnGhost" onClick={renameSeason}>Rename current</button>
+                    <button className="btn" onClick={createSeason}>Create ladder season</button>
+                    <button className="btnGhost" onClick={editSeason}>Edit current ladder season</button>
                     <button className="btnGhost" onClick={setPublicDefault}>Set current view as guest default</button>
                   </div>
                 </div>

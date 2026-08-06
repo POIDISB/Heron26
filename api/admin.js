@@ -144,6 +144,50 @@ export default async function handler(req, res) {
       });
     }
 
+
+    if (action === "updateSeason") {
+      const seasonId = String(payload.seasonId || "");
+      const name = String(payload.name || "").trim();
+      const startDate = String(payload.startDate || "");
+      const endDate = String(payload.endDate || "");
+
+      if (
+        !seasonId ||
+        !name ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(endDate)
+      ) {
+        return json(res, 400, {
+          error: "Ladder season, name, start date and end date are required.",
+        });
+      }
+
+      if (endDate < startDate) {
+        return json(res, 400, {
+          error: "End date must be after start date.",
+        });
+      }
+
+      const result = await supabase
+        .from("seasons")
+        .update({
+          name,
+          start_date: startDate,
+          end_date: endDate,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", seasonId)
+        .select("*")
+        .single();
+
+      if (result.error) throw result.error;
+
+      return json(res, 200, {
+        ok: true,
+        season: result.data,
+      });
+    }
+
     if (action === "renameSeason") {
       const seasonId = String(payload.seasonId || "");
       const name = String(payload.name || "").trim();
