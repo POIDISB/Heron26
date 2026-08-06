@@ -304,6 +304,35 @@ function computeNumberOneStats(players, matches, season, nowMs = Date.now()) {
   return result;
 }
 
+function formatProfileDate(dateISO) {
+  if (!dateISO) return "—";
+  const d = new Date(`${dateISO}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return String(dateISO);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function scoreDetailsForPlayer(score, isChallenger) {
+  const parsed = parseScore(score);
+  if (!parsed.valid) return { totalGames: 0, bagelsWon: 0 };
+  let totalGames = 0;
+  let bagelsWon = 0;
+  for (const set of parsed.sets) {
+    totalGames += isMatchTieBreakSet(set) ? 1 : set.p1 + set.p2;
+    const own = isChallenger ? set.p1 : set.p2;
+    const opp = isChallenger ? set.p2 : set.p1;
+    if (own === 6 && opp === 0) bagelsWon += 1;
+  }
+  return { totalGames, bagelsWon };
+}
+
+function chooseBiggestWin(current, candidate) {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  if (candidate.gap !== current.gap) return candidate.gap > current.gap ? candidate : current;
+  if (candidate.to !== current.to) return candidate.to < current.to ? candidate : current;
+  return String(candidate.date || "") > String(current.date || "") ? candidate : current;
+}
+
 function summarizeMatchups(matchRows, playerPid) {
   const map = new Map();
   let biggestUpset = null;
@@ -319,7 +348,7 @@ function summarizeMatchups(matchRows, playerPid) {
     row.played += 1; didWin ? row.wins++ : row.losses++; map.set(key,row);
     if (didWin && isChallenger) {
       const gap = Math.max(0, asNumber(m.challengerStartPos,0) - asNumber(m.opponentStartPos,0));
-      if (!biggestUpset || gap > biggestUpset.gap || (gap === biggestUpset.gap && Number(m.opponentStartPos) < Number(biggestUpset.to))) biggestUpset = { gap, opponent: opponentName || "Unknown", score: m.score, date: m.date, from: m.challengerStartPos, to: m.opponentStartPos };
+      biggestUpset = chooseBiggestWin(biggestUpset, { gap, opponent: opponentName || "Unknown", score: m.score, date: m.date, from: asNumber(m.challengerStartPos, 0), to: asNumber(m.opponentStartPos, 0) });
     }
   }
   const rows=[...map.values()].filter(x=>x.played>0).map(x=>({...x, winPct: Math.round((x.wins/x.played)*100)}));
@@ -755,6 +784,12 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
   let gamesWon = 0;
   let gamesLost = 0;
   let biggestUpset = null;
+  let worstDefeat = null;
+  let longestMatch = null;
+  let bagelSetsWon = 0;
+  let challengeStreak = 0;
+  let bestChallengeStreak = 0;
+  const observedPositions = [];
   const surfaceMap = new Map();
   const opponentMap = new Map();
   const seasonMap = new Map();
@@ -763,9 +798,18 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     const isChallenger = sameName(m.challenger_name);
     const didWin = (isChallenger && m.winner_id === "p1") || (!isChallenger && m.winner_id === "p2");
     const opponentName = String(isChallenger ? m.opponent_name : m.challenger_name).trim() || "Unknown";
+    const sid = String(m.season_id || "");
+    const season = seasonById.get(sid);
+    const ownStart = isChallenger ? asNumber(m.challenger_start_pos, 0) : asNumber(m.opponent_start_pos, 0);
+    if (ownStart > 0) observedPositions.push(ownStart);
     if (didWin && isChallenger) {
       const gap = Math.max(0, asNumber(m.challenger_start_pos, 0) - asNumber(m.opponent_start_pos, 0));
-      if (!biggestUpset || gap > biggestUpset.gap || (gap === biggestUpset.gap && asNumber(m.opponent_start_pos, 999) < asNumber(biggestUpset.to, 999))) biggestUpset = { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.challenger_start_pos, 0), to: asNumber(m.opponent_start_pos, 0) };
+      biggestUpset = chooseBiggestWin(biggestUpset, { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.challenger_start_pos, 0), to: asNumber(m.opponent_start_pos, 0), seasonId: sid, seasonName: season?.name || sid || "Unknown ladder season" });
+    }
+    if (!didWin && !isChallenger) {
+      const gap = Math.max(0, asNumber(m.challenger_start_pos, 0) - asNumber(m.opponent_start_pos, 0));
+      const candidate = { gap, opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), from: asNumber(m.opponent_start_pos, 0), challengerFrom: asNumber(m.challenger_start_pos, 0), seasonName: season?.name || sid || "Unknown ladder season" };
+      if (!worstDefeat || gap > worstDefeat.gap || (gap === worstDefeat.gap && candidate.from < worstDefeat.from)) worstDefeat = candidate;
     }
     const parsed = parseScore(String(m.score || ""));
     let ownSets = 0, oppSets = 0, ownGames = 0, oppGames = 0;
@@ -776,13 +820,27 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
       ownGames = isChallenger ? computed.p1Games : computed.p2Games;
       oppGames = isChallenger ? computed.p2Games : computed.p1Games;
     }
+    const scoreInfo = scoreDetailsForPlayer(String(m.score || ""), isChallenger);
+    bagelSetsWon += scoreInfo.bagelsWon;
+    const matchCandidate = { opponent: opponentName, score: String(m.score || ""), date: String(m.date || ""), seasonName: season?.name || sid || "Unknown ladder season", totalGames: scoreInfo.totalGames, didWin };
+    if (!longestMatch || matchCandidate.totalGames > longestMatch.totalGames) longestMatch = matchCandidate;
+
     wins += didWin ? 1 : 0;
     if (didWin) {
       currentStreak += 1;
       bestStreak = Math.max(bestStreak, currentStreak);
-      if (isChallenger) successfulChallenges += 1;
-      else successfulDefences += 1;
-    } else currentStreak = 0;
+      if (isChallenger) {
+        successfulChallenges += 1;
+        challengeStreak += 1;
+        bestChallengeStreak = Math.max(bestChallengeStreak, challengeStreak);
+      } else {
+        successfulDefences += 1;
+        challengeStreak = 0;
+      }
+    } else {
+      currentStreak = 0;
+      challengeStreak = 0;
+    }
     setsWon += ownSets; setsLost += oppSets; gamesWon += ownGames; gamesLost += oppGames;
 
     const surface = String(m.surface || "Other");
@@ -793,8 +851,6 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     const oppRow = opponentMap.get(opponentKey) || { name: opponentName, played: 0, wins: 0, losses: 0 };
     oppRow.played += 1; if (didWin) oppRow.wins += 1; else oppRow.losses += 1; opponentMap.set(opponentKey, oppRow);
 
-    const sid = String(m.season_id || "");
-    const season = seasonById.get(sid);
     const seasonRow = seasonMap.get(sid) || { seasonId: sid, name: season?.name || sid || "Unknown season", startDate: season?.start_date || "", played: 0, wins: 0 };
     seasonRow.played += 1; seasonRow.wins += didWin ? 1 : 0; seasonMap.set(sid, seasonRow);
 
@@ -802,11 +858,12 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
   });
 
   const playerRows = (playerRes.data || []).filter((p) => sameName(p.name));
-  const positions = playerRows.map((p) => Number(p.position)).filter((n) => Number.isFinite(n) && n > 0);
+  const positions = [...playerRows.map((p) => Number(p.position)), ...observedPositions].filter((n) => Number.isFinite(n) && n > 0);
   const seasonsPlayed = new Set([...careerMatches.map((m) => String(m.season_id || "")), ...playerRows.map((p) => String(p.season_id || ""))].filter(Boolean));
   const matchupRows = [...opponentMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 }));
   const bestVs = [...matchupRows].sort((a,b) => b.winPct-a.winPct || b.played-a.played || b.wins-a.wins)[0] || null;
   const worstVs = [...matchupRows].sort((a,b) => a.winPct-b.winPct || b.played-a.played || b.losses-a.losses)[0] || null;
+  const mostFrequentOpponent = [...matchupRows].sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))[0] || null;
   let daysAtOne = 0, numberOneDefences = 0;
   for (const sid of seasonsPlayed) {
     const season = seasonById.get(sid);
@@ -827,6 +884,11 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     daysAtOne,
     numberOneDefences,
     biggestUpset,
+    worstDefeat,
+    longestMatch,
+    bagelSetsWon,
+    bestChallengeStreak,
+    mostFrequentOpponent,
     bestVs,
     worstVs,
     bestStreak,
@@ -835,6 +897,7 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     gamesWon,
     gamesLost,
     highestPosition: positions.length ? Math.min(...positions) : null,
+    lowestPosition: positions.length ? Math.max(...positions) : null,
     seasonsPlayed: seasonsPlayed.size,
     surfaces: [...surfaceMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => b.played - a.played),
     headToHead: matchupRows.sort((a, b) => b.played - a.played || b.wins - a.wins || a.name.localeCompare(b.name)),
@@ -2141,17 +2204,35 @@ export default function App() {
           const currentMatches = list.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
           const currentStats = (() => {
             let wins = 0, successfulChallenges = 0, successfulDefences = 0, bestStreak = 0, streak = 0;
+            let challengeStreak = 0, bestChallengeStreak = 0, bagelSetsWon = 0;
             let setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0;
+            let longestMatch = null, worstDefeat = null;
+            const observedPositions = selectedPlayer?.position > 0 ? [selectedPlayer.position] : [];
             const surfaces = new Map();
             const h2h = new Map();
             const chronological = [...currentMatches].sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
             for (const m of chronological) {
               const isChallenger = m.challengerPid === pid;
               const didWin = (m.winnerId === "p1" && isChallenger) || (m.winnerId === "p2" && !isChallenger);
+              const ownStart = isChallenger ? asNumber(m.challengerStartPos, 0) : asNumber(m.opponentStartPos, 0);
+              if (ownStart > 0) observedPositions.push(ownStart);
               if (didWin) {
                 wins += 1; streak += 1; bestStreak = Math.max(bestStreak, streak);
-                if (isChallenger) successfulChallenges += 1; else successfulDefences += 1;
-              } else streak = 0;
+                if (isChallenger) { successfulChallenges += 1; challengeStreak += 1; bestChallengeStreak = Math.max(bestChallengeStreak, challengeStreak); }
+                else { successfulDefences += 1; challengeStreak = 0; }
+              } else {
+                streak = 0;
+                challengeStreak = 0;
+                if (!isChallenger) {
+                  const gap = Math.max(0, asNumber(m.challengerStartPos, 0) - asNumber(m.opponentStartPos, 0));
+                  const candidate = { gap, opponent: m.p1Name || "Unknown", score: m.score, date: m.date, from: asNumber(m.opponentStartPos, 0), challengerFrom: asNumber(m.challengerStartPos, 0), seasonName: seasonLabel };
+                  if (!worstDefeat || gap > worstDefeat.gap || (gap === worstDefeat.gap && candidate.from < worstDefeat.from)) worstDefeat = candidate;
+                }
+              }
+              const scoreInfo = scoreDetailsForPlayer(m.score, isChallenger);
+              bagelSetsWon += scoreInfo.bagelsWon;
+              const matchCandidate = { opponent: isChallenger ? m.p2Name : m.p1Name, score: m.score, date: m.date, seasonName: seasonLabel, totalGames: scoreInfo.totalGames, didWin };
+              if (!longestMatch || matchCandidate.totalGames > longestMatch.totalGames) longestMatch = matchCandidate;
               const parsed = parseScore(m.score);
               if (parsed.valid) {
                 const totals = computeFromSets(parsed.sets);
@@ -2169,11 +2250,23 @@ export default function App() {
               hr.played += 1; if (didWin) hr.wins += 1; h2h.set(key, hr);
             }
             const played = currentMatches.length;
+            const matchupRows = [...h2h.values()].map((x) => ({ ...x, losses: x.played - x.wins, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 }));
+            const bestVs = [...matchupRows].sort((a,b) => b.winPct-a.winPct || b.played-a.played || b.wins-a.wins)[0] || null;
+            const worstVs = [...matchupRows].sort((a,b) => a.winPct-b.winPct || b.played-a.played || b.losses-a.losses)[0] || null;
+            const mostFrequentOpponent = [...matchupRows].sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))[0] || null;
+            const matchupSummary = summarizeMatchups(currentMatches, pid);
+            const biggestWin = matchupSummary.biggestUpset ? { ...matchupSummary.biggestUpset, seasonName: seasonLabel } : null;
+            const oneStats = computeNumberOneStats(players, matches, activeSeason, nowTick).get(pid) || { daysAtOne: 0, numberOneDefences: 0 };
             return {
               played, wins, losses: played - wins, winPct: played ? Math.round((wins / played) * 100) : 0,
-              successfulChallenges, successfulDefences, bestStreak, setsWon, setsLost, gamesWon, gamesLost,
+              successfulChallenges, successfulDefences, bestStreak, bestChallengeStreak, bagelSetsWon, longestMatch, worstDefeat,
+              daysAtOne: oneStats.daysAtOne, numberOneDefences: oneStats.numberOneDefences,
+              highestPosition: observedPositions.length ? Math.min(...observedPositions) : null,
+              lowestPosition: observedPositions.length ? Math.max(...observedPositions) : null,
+              mostFrequentOpponent, biggestUpset: biggestWin, bestVs, worstVs,
+              setsWon, setsLost, gamesWon, gamesLost,
               surfaces: [...surfaces.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a,b) => b.played-a.played),
-              headToHead: [...h2h.values()].sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))
+              headToHead: matchupRows.sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))
             };
           })();
 
@@ -2214,13 +2307,25 @@ export default function App() {
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{currentStats.bestStreak}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Current position</div><div className="analyticsKpiValue">{selectedPlayer?.position >= 1 && selectedPlayer?.position <= playerCount ? `#${selectedPlayer.position}` : "—"}</div></div>
                     <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{currentStats.daysAtOne}</div><div className="analyticsKpiSub">{currentStats.numberOneDefences} defence{currentStats.numberOneDefences === 1 ? "" : "s"}</div></div>
-                    <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest win</div><div className="analyticsKpiValue smallKpiValue">{currentStats.biggestUpset ? `+${currentStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{currentStats.biggestUpset ? `vs ${currentStats.biggestUpset.opponent}` : "No successful challenge yet"}</div></div>
+                    <div className="analyticsKpi recordKpi"><div className="analyticsKpiLabel">Biggest win</div>{currentStats.biggestUpset ? <><div className="analyticsKpiValue smallKpiValue">#{currentStats.biggestUpset.from} → #{currentStats.biggestUpset.to}</div><div className="analyticsKpiSub">+{currentStats.biggestUpset.gap} places • vs {currentStats.biggestUpset.opponent}</div><div className="recordMeta">{formatProfileDate(currentStats.biggestUpset.date)} • {currentStats.biggestUpset.seasonName}</div><div className="recordScore">{currentStats.biggestUpset.score}</div></> : <div className="analyticsKpiSub">No successful challenge yet</div>}</div>
                   </div>
                   <div className="analyticsGrid">
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Season totals</div><div className="careerTotals"><div>Sets <strong>{currentStats.setsWon}–{currentStats.setsLost}</strong></div><div>Games <strong>{currentStats.gamesWon}–{currentStats.gamesLost}</strong></div><div>Set diff <strong>{currentStats.setsWon-currentStats.setsLost >= 0 ? "+" : ""}{currentStats.setsWon-currentStats.setsLost}</strong></div><div>Game diff <strong>{currentStats.gamesWon-currentStats.gamesLost >= 0 ? "+" : ""}{currentStats.gamesWon-currentStats.gamesLost}</strong></div></div></div>
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{currentStats.surfaces.length ? currentStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played-x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
                   </div>
                   <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best record vs</div><div className="profileMatchup">{currentStats.bestVs ? <><strong>{currentStats.bestVs.name}</strong><span>{currentStats.bestVs.wins}–{currentStats.bestVs.losses} ({currentStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst record vs</div><div className="profileMatchup">{currentStats.worstVs ? <><strong>{currentStats.worstVs.name}</strong><span>{currentStats.worstVs.wins}–{currentStats.worstVs.losses} ({currentStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
+                  <div className="analyticsBox recordsBox">
+                    <div className="analyticsBoxTitle">Season records</div>
+                    <div className="recordsGrid">
+                      <div className="recordItem"><span>Highest ranking</span><strong>{currentStats.highestPosition ? `#${currentStats.highestPosition}` : "—"}</strong></div>
+                      <div className="recordItem"><span>Lowest ranking</span><strong>{currentStats.lowestPosition ? `#${currentStats.lowestPosition}` : "—"}</strong></div>
+                      <div className="recordItem"><span>Most frequent opponent</span><strong>{currentStats.mostFrequentOpponent ? `${currentStats.mostFrequentOpponent.name} (${currentStats.mostFrequentOpponent.played})` : "—"}</strong></div>
+                      <div className="recordItem"><span>Best challenge streak</span><strong>{currentStats.bestChallengeStreak}</strong></div>
+                      <div className="recordItem"><span>6–0 sets won</span><strong>{currentStats.bagelSetsWon}</strong></div>
+                      <div className="recordItem"><span>Longest match (by games)</span><strong>{currentStats.longestMatch ? `${currentStats.longestMatch.totalGames} vs ${currentStats.longestMatch.opponent}` : "—"}</strong>{currentStats.longestMatch ? <small>{formatProfileDate(currentStats.longestMatch.date)} • {currentStats.longestMatch.score}</small> : null}</div>
+                      <div className="recordItem"><span>Worst defeat</span><strong>{currentStats.worstDefeat ? `#${currentStats.worstDefeat.challengerFrom} beat #${currentStats.worstDefeat.from}` : "—"}</strong>{currentStats.worstDefeat ? <small>{formatProfileDate(currentStats.worstDefeat.date)} • vs {currentStats.worstDefeat.opponent}</small> : null}</div>
+                    </div>
+                  </div>
                   <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Current-season head to head</div>{currentStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th><th>Win %</th></tr></thead><tbody>{currentStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.played-x.wins}</td><td>{x.played ? Math.round((x.wins/x.played)*100) : 0}%</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history this season.</div>}</div>
                 </div>
               ) : lifetimeLoading ? <div className="hint lifetimeStatus">Loading lifetime statistics…</div>
@@ -2236,7 +2341,7 @@ export default function App() {
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Best winning streak</div><div className="analyticsKpiValue">{lifetimeStats.bestStreak}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Highest position</div><div className="analyticsKpiValue">{lifetimeStats.highestPosition ? `#${lifetimeStats.highestPosition}` : "—"}</div></div>
                       <div className="analyticsKpi"><div className="analyticsKpiLabel">Days at #1</div><div className="analyticsKpiValue">{lifetimeStats.daysAtOne}</div><div className="analyticsKpiSub">{lifetimeStats.numberOneDefences} defence{lifetimeStats.numberOneDefences === 1 ? "" : "s"}</div></div>
-                      <div className="analyticsKpi"><div className="analyticsKpiLabel">Biggest win</div><div className="analyticsKpiValue smallKpiValue">{lifetimeStats.biggestUpset ? `+${lifetimeStats.biggestUpset.gap} places` : "—"}</div><div className="analyticsKpiSub">{lifetimeStats.biggestUpset ? `vs ${lifetimeStats.biggestUpset.opponent}` : "No successful challenge yet"}</div></div>
+                      <div className="analyticsKpi recordKpi"><div className="analyticsKpiLabel">Biggest win</div>{lifetimeStats.biggestUpset ? <><div className="analyticsKpiValue smallKpiValue">#{lifetimeStats.biggestUpset.from} → #{lifetimeStats.biggestUpset.to}</div><div className="analyticsKpiSub">+{lifetimeStats.biggestUpset.gap} places • vs {lifetimeStats.biggestUpset.opponent}</div><div className="recordMeta">{formatProfileDate(lifetimeStats.biggestUpset.date)} • {lifetimeStats.biggestUpset.seasonName}</div><div className="recordScore">{lifetimeStats.biggestUpset.score}</div></> : <div className="analyticsKpiSub">No successful challenge yet</div>}</div>
                     </div>
 
                     <div className="analyticsGrid">
@@ -2245,6 +2350,18 @@ export default function App() {
                     </div>
 
                     <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best career record vs</div><div className="profileMatchup">{lifetimeStats.bestVs ? <><strong>{lifetimeStats.bestVs.name}</strong><span>{lifetimeStats.bestVs.wins}–{lifetimeStats.bestVs.losses} ({lifetimeStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst career record vs</div><div className="profileMatchup">{lifetimeStats.worstVs ? <><strong>{lifetimeStats.worstVs.name}</strong><span>{lifetimeStats.worstVs.wins}–{lifetimeStats.worstVs.losses} ({lifetimeStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
+                    <div className="analyticsBox recordsBox">
+                      <div className="analyticsBoxTitle">Career records</div>
+                      <div className="recordsGrid">
+                        <div className="recordItem"><span>Highest ranking</span><strong>{lifetimeStats.highestPosition ? `#${lifetimeStats.highestPosition}` : "—"}</strong></div>
+                        <div className="recordItem"><span>Lowest ranking</span><strong>{lifetimeStats.lowestPosition ? `#${lifetimeStats.lowestPosition}` : "—"}</strong></div>
+                        <div className="recordItem"><span>Most frequent opponent</span><strong>{lifetimeStats.mostFrequentOpponent ? `${lifetimeStats.mostFrequentOpponent.name} (${lifetimeStats.mostFrequentOpponent.played})` : "—"}</strong></div>
+                        <div className="recordItem"><span>Best challenge streak</span><strong>{lifetimeStats.bestChallengeStreak}</strong></div>
+                        <div className="recordItem"><span>6–0 sets won</span><strong>{lifetimeStats.bagelSetsWon}</strong></div>
+                        <div className="recordItem"><span>Longest match (by games)</span><strong>{lifetimeStats.longestMatch ? `${lifetimeStats.longestMatch.totalGames} vs ${lifetimeStats.longestMatch.opponent}` : "—"}</strong>{lifetimeStats.longestMatch ? <small>{formatProfileDate(lifetimeStats.longestMatch.date)} • {lifetimeStats.longestMatch.seasonName} • {lifetimeStats.longestMatch.score}</small> : null}</div>
+                        <div className="recordItem"><span>Worst defeat</span><strong>{lifetimeStats.worstDefeat ? `#${lifetimeStats.worstDefeat.challengerFrom} beat #${lifetimeStats.worstDefeat.from}` : "—"}</strong>{lifetimeStats.worstDefeat ? <small>{formatProfileDate(lifetimeStats.worstDefeat.date)} • {lifetimeStats.worstDefeat.seasonName} • vs {lifetimeStats.worstDefeat.opponent}</small> : null}</div>
+                      </div>
+                    </div>
                     <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Season by season</div><div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Season</th><th>Played</th><th>Record</th><th>Win %</th></tr></thead><tbody>{lifetimeStats.seasons.map((x) => <tr key={x.seasonId}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td><td>{x.winPct}%</td></tr>)}</tbody></table></div></div>
 
                     <div className="analyticsBox analyticsTableBox"><div className="analyticsBoxTitle">Lifetime head to head</div>{lifetimeStats.headToHead.length ? <div className="tableWrap"><table className="table lifetimeTable"><thead><tr><th>Opponent</th><th>Meetings</th><th>Record</th></tr></thead><tbody>{lifetimeStats.headToHead.map((x) => <tr key={x.name.toLowerCase()}><td><strong>{x.name}</strong></td><td>{x.played}</td><td>{x.wins}–{x.losses}</td></tr>)}</tbody></table></div> : <div className="hint analyticsEmpty">No head-to-head history.</div>}</div>
@@ -3083,6 +3200,7 @@ const css = `
     .ladderViewToggle .segBtn { flex: 1; min-width: 0; }
     .analyticsKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .lifetimeKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .recordsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .playerProfileToggle { max-width: none; overflow-x: auto; }
     .playerProfileToggle .segBtn { min-width: max-content; }
     .careerTotals { grid-template-columns: 1fr; }
@@ -3122,5 +3240,13 @@ const css = `
   .progressNeutral { color:var(--muted); font-weight:700; }
   .smallKpiValue { font-size:20px !important; }
   .profileMatchup { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+  .recordKpi { min-height:150px; }
+  .recordMeta, .recordScore { margin-top:7px; font-size:12px; color:var(--muted); line-height:1.35; }
+  .recordScore { color:#dbeafe; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .recordsGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+  .recordItem { display:flex; flex-direction:column; gap:5px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.035); border-radius:10px; padding:12px; min-width:0; }
+  .recordItem span { color:var(--muted); font-size:12px; }
+  .recordItem strong { overflow-wrap:anywhere; }
+  .recordItem small { color:var(--muted); line-height:1.35; }
 
 `;
