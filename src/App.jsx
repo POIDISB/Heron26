@@ -16,7 +16,6 @@ import { createClient } from "@supabase/supabase-js";
 const DEFAULT_PLAYER_COUNT = 40;
 const LEGACY_SEASON_ID = "may-july-2026";
 const CAPACITY = 60;
-const SURFACES = ["Clay", "Indoor", "Outdoor Hard Court"];
 const DIVISIONS = [
   { key: "mens", label: "Men's" },
   { key: "womens", label: "Women's" },
@@ -510,7 +509,6 @@ function MobileSummary({ divisionLabel, playerCount, totalMatches, top3 }) {
 
 function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
   const maxMonth = Math.max(1, ...analytics.monthly.map((x) => x.matches));
-  const maxSurface = Math.max(1, ...analytics.surfaces.map((x) => x.matches));
   const [playerSort, setPlayerSort] = useState({ key: "played", dir: "desc" });
   const [h2hSort, setH2hSort] = useState({ key: "meetings", dir: "desc" });
 
@@ -611,19 +609,6 @@ function AnalyticsPanel({ analytics, divisionLabel, seasonLabel }) {
               <div className="barRow" key={item.key}>
                 <div className="barLabel">{item.label}</div>
                 <div className="barTrack"><div className="barFill" style={{ width: `${Math.max(item.matches ? 8 : 0, (item.matches / maxMonth) * 100)}%` }} /></div>
-                <div className="barValue">{item.matches}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="analyticsBox">
-          <div className="analyticsBoxTitle">Surface split</div>
-          <div className="barChart">
-            {analytics.surfaces.map((item) => (
-              <div className="barRow" key={item.surface}>
-                <div className="barLabel surfaceLabel">{item.surface}</div>
-                <div className="barTrack"><div className="barFill alt" style={{ width: `${Math.max(item.matches ? 8 : 0, (item.matches / maxSurface) * 100)}%` }} /></div>
                 <div className="barValue">{item.matches}</div>
               </div>
             ))}
@@ -790,7 +775,6 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
   let challengeStreak = 0;
   let bestChallengeStreak = 0;
   const observedPositions = [];
-  const surfaceMap = new Map();
   const opponentMap = new Map();
   const seasonMap = new Map();
 
@@ -843,10 +827,6 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     }
     setsWon += ownSets; setsLost += oppSets; gamesWon += ownGames; gamesLost += oppGames;
 
-    const surface = String(m.surface || "Other");
-    const surfaceRow = surfaceMap.get(surface) || { surface, played: 0, wins: 0 };
-    surfaceRow.played += 1; surfaceRow.wins += didWin ? 1 : 0; surfaceMap.set(surface, surfaceRow);
-
     const opponentKey = opponentName.toLowerCase();
     const oppRow = opponentMap.get(opponentKey) || { name: opponentName, played: 0, wins: 0, losses: 0 };
     oppRow.played += 1; if (didWin) oppRow.wins += 1; else oppRow.losses += 1; opponentMap.set(opponentKey, oppRow);
@@ -854,7 +834,7 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     const seasonRow = seasonMap.get(sid) || { seasonId: sid, name: season?.name || sid || "Unknown season", startDate: season?.start_date || "", played: 0, wins: 0 };
     seasonRow.played += 1; seasonRow.wins += didWin ? 1 : 0; seasonMap.set(sid, seasonRow);
 
-    return { id: String(m.id), seasonId: sid, seasonName: season?.name || sid, date: String(m.date || ""), opponentName, isChallenger, didWin, score: String(m.score || ""), surface };
+    return { id: String(m.id), seasonId: sid, seasonName: season?.name || sid, date: String(m.date || ""), opponentName, isChallenger, didWin, score: String(m.score || "") };
   });
 
   const playerRows = (playerRes.data || []).filter((p) => sameName(p.name));
@@ -899,7 +879,6 @@ async function fetchLifetimeStats(playerName, division, seasonRows = []) {
     highestPosition: positions.length ? Math.min(...positions) : null,
     lowestPosition: positions.length ? Math.max(...positions) : null,
     seasonsPlayed: seasonsPlayed.size,
-    surfaces: [...surfaceMap.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => b.played - a.played),
     headToHead: matchupRows.sort((a, b) => b.played - a.played || b.wins - a.wins || a.name.localeCompare(b.name)),
     seasons: [...seasonMap.values()].map((x) => ({ ...x, losses: x.played - x.wins, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))),
     recent: [...normalized].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id))).slice(0, 10),
@@ -949,7 +928,6 @@ export default function App() {
   const [matchPos, setMatchPos] = useState("1");
   const [challengerPid, setChallengerPid] = useState("");
   const [winner, setWinner] = useState("p2");
-  const [surface, setSurface] = useState("Outdoor Hard Court");
   const [score, setScore] = useState("");
   const [error, setError] = useState("");
 
@@ -973,7 +951,6 @@ export default function App() {
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editDate, setEditDate] = useState("");
-  const [editSurface, setEditSurface] = useState("Outdoor Hard Court");
   const [editWinner, setEditWinner] = useState("p2");
   const [editScore, setEditScore] = useState("");
   const [editError, setEditError] = useState("");
@@ -1291,7 +1268,6 @@ export default function App() {
       ["sep", "Sep"], ["oct", "Oct"], ["nov", "Nov"], ["dec", "Dec"], ["jan", "Jan"], ["feb", "Feb"], ["mar", "Mar"],
     ];
     const monthlyCounts = new Map();
-    const surfaceCounts = new Map(SURFACES.map((x) => [x, 0]));
     let deciders = 0;
     let challengerWins = 0;
 
@@ -1301,8 +1277,6 @@ export default function App() {
         const key = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"][d.getMonth()];
         monthlyCounts.set(key, (monthlyCounts.get(key) || 0) + 1);
       }
-      const surf = String(m.surface || "Other");
-      surfaceCounts.set(surf, (surfaceCounts.get(surf) || 0) + 1);
       const parsed = parseScore(m.score);
       if (parsed.valid && parsed.sets.length >= 3) deciders += 1;
       if (m.winnerId === "p1") challengerWins += 1;
@@ -1384,7 +1358,6 @@ export default function App() {
       challengerWins,
       challengeWinRate: realMatches.length ? Math.round((challengerWins / realMatches.length) * 100) : 0,
       monthly: seasonMonths.map(([key, label]) => ({ key, label, matches: monthlyCounts.get(key) || 0 })),
-      surfaces: [...surfaceCounts.entries()].map(([surface, count]) => ({ surface, matches: count })).filter((x) => x.matches > 0 || SURFACES.includes(x.surface)),
       playerRows,
       headToHead,
     };
@@ -1472,7 +1445,7 @@ export default function App() {
       opponentName: p2.name || "",
       winnerNameSnapshot: winner === "p1" ? (p1.name || "") : (p2.name || ""),
       score: String(score || "").trim(),
-      surface,
+      surface: "",
       challengerStartPos,
       opponentStartPos,
       ladderMoveApplied: moved.applied,
@@ -1650,7 +1623,6 @@ export default function App() {
     setEditError("");
     setEditId(match.id);
     setEditDate(match.date);
-    setEditSurface(match.surface || "Outdoor Hard Court");
     setEditWinner(match.winnerId);
     setEditScore(match.score);
     setEditOpen(true);
@@ -1719,7 +1691,7 @@ export default function App() {
     const edited = {
       ...original,
       date: editDate,
-      surface: editSurface,
+      surface: original.surface || "",
       winnerId: editWinner,
       challengerName: original.challengerName || "",
       opponentName: original.opponentName || "",
@@ -2102,7 +2074,7 @@ export default function App() {
     try {
       const XLSX = await import("xlsx");
       const ladderRows = displayedPlayers.map((p) => ({ Position: isWithdrawnPlayer(p) ? "W" : p.position, Name: p.name, Played: p.matchesPlayed, Won: p.matchesWon, Lost: Math.max(0, p.matchesPlayed - p.matchesWon), "Sets Won": p.setsWon, "Sets Lost": p.setsLost, "Games Won": p.gamesWon, "Games Lost": p.gamesLost }));
-      const historyRows = matchesView.map((m) => ({ Date: m.date, Challenger: m.p1Name, Opponent: m.p2Name, Winner: m.winnerName, Score: formatScore(m.score), Surface: m.surface, "Position Played For": m.positionPlayedFor }));
+      const historyRows = matchesView.map((m) => ({ Date: m.date, Challenger: m.p1Name, Opponent: m.p2Name, Winner: m.winnerName, Score: formatScore(m.score), "Position Played For": m.positionPlayedFor }));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ladderRows), "Ladder"); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(historyRows), "Match History");
       XLSX.writeFile(wb, `Heron-${seasonLabel}-${divisionLabel}.xlsx`.replace(/[^a-z0-9_.-]+/gi, "-"));
     } catch (e) { setError(`Excel export failed: ${e?.message || e}`); }
@@ -2208,7 +2180,6 @@ export default function App() {
             let setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0;
             let longestMatch = null, worstDefeat = null;
             const observedPositions = selectedPlayer?.position > 0 ? [selectedPlayer.position] : [];
-            const surfaces = new Map();
             const h2h = new Map();
             const chronological = [...currentMatches].sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
             for (const m of chronological) {
@@ -2241,9 +2212,6 @@ export default function App() {
                 gamesWon += isChallenger ? totals.p1Games : totals.p2Games;
                 gamesLost += isChallenger ? totals.p2Games : totals.p1Games;
               }
-              const surfaceName = String(m.surface || "Unknown");
-              const sr = surfaces.get(surfaceName) || { surface: surfaceName, played: 0, wins: 0 };
-              sr.played += 1; if (didWin) sr.wins += 1; surfaces.set(surfaceName, sr);
               const opponentName = isChallenger ? m.p2Name : m.p1Name;
               const key = String(opponentName || "Unknown").toLowerCase();
               const hr = h2h.get(key) || { name: opponentName || "Unknown", played: 0, wins: 0 };
@@ -2265,7 +2233,6 @@ export default function App() {
               lowestPosition: observedPositions.length ? Math.max(...observedPositions) : null,
               mostFrequentOpponent, biggestUpset: biggestWin, bestVs, worstVs,
               setsWon, setsLost, gamesWon, gamesLost,
-              surfaces: [...surfaces.values()].map((x) => ({ ...x, winPct: x.played ? Math.round((x.wins / x.played) * 100) : 0 })).sort((a,b) => b.played-a.played),
               headToHead: matchupRows.sort((a,b) => b.played-a.played || a.name.localeCompare(b.name))
             };
           })();
@@ -2289,7 +2256,7 @@ export default function App() {
                         <div key={m.id} className="playerMatchRow roomy">
                           <div className="playerMatchTop"><div className="mono">{m.date}</div><div className={didWin ? "pillWin" : "pillLoss"}>{didWin ? "WIN" : "LOSS"}</div></div>
                           <div className="playerMatchMid stackedMobile">
-                            <div><div className="playerMatchTitle">{pname} vs {opponentName}</div><div className="hint">{isChallenger ? `Challenging for Position #${m.positionPlayedFor}` : `Defending Position #${m.positionPlayedFor}`} • {m.surface || "—"}{m.ladderMoveApplied ? " • Ladder moved" : ""}</div></div>
+                            <div><div className="playerMatchTitle">{pname} vs {opponentName}</div><div className="hint">{isChallenger ? `Challenging for Position #${m.positionPlayedFor}` : `Defending Position #${m.positionPlayedFor}`}{m.ladderMoveApplied ? " • Ladder moved" : ""}</div></div>
                             <div className="mono playerMatchScore">{formatScoreForPlayer(m.score, isChallenger)}</div>
                           </div>
                         </div>
@@ -2311,7 +2278,7 @@ export default function App() {
                   </div>
                   <div className="analyticsGrid">
                     <div className="analyticsBox"><div className="analyticsBoxTitle">Season totals</div><div className="careerTotals"><div>Sets <strong>{currentStats.setsWon}–{currentStats.setsLost}</strong></div><div>Games <strong>{currentStats.gamesWon}–{currentStats.gamesLost}</strong></div><div>Set diff <strong>{currentStats.setsWon-currentStats.setsLost >= 0 ? "+" : ""}{currentStats.setsWon-currentStats.setsLost}</strong></div><div>Game diff <strong>{currentStats.gamesWon-currentStats.gamesLost >= 0 ? "+" : ""}{currentStats.gamesWon-currentStats.gamesLost}</strong></div></div></div>
-                    <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{currentStats.surfaces.length ? currentStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played-x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
+                    
                   </div>
                   <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best record vs</div><div className="profileMatchup">{currentStats.bestVs ? <><strong>{currentStats.bestVs.name}</strong><span>{currentStats.bestVs.wins}–{currentStats.bestVs.losses} ({currentStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst record vs</div><div className="profileMatchup">{currentStats.worstVs ? <><strong>{currentStats.worstVs.name}</strong><span>{currentStats.worstVs.wins}–{currentStats.worstVs.losses} ({currentStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
                   <div className="analyticsBox recordsBox">
@@ -2346,7 +2313,7 @@ export default function App() {
 
                     <div className="analyticsGrid">
                       <div className="analyticsBox"><div className="analyticsBoxTitle">Career totals</div><div className="careerTotals"><div>Sets <strong>{lifetimeStats.setsWon}–{lifetimeStats.setsLost}</strong></div><div>Games <strong>{lifetimeStats.gamesWon}–{lifetimeStats.gamesLost}</strong></div><div>Set diff <strong>{lifetimeStats.setsWon - lifetimeStats.setsLost >= 0 ? "+" : ""}{lifetimeStats.setsWon - lifetimeStats.setsLost}</strong></div><div>Game diff <strong>{lifetimeStats.gamesWon - lifetimeStats.gamesLost >= 0 ? "+" : ""}{lifetimeStats.gamesWon - lifetimeStats.gamesLost}</strong></div></div></div>
-                      <div className="analyticsBox"><div className="analyticsBoxTitle">Surface record</div>{lifetimeStats.surfaces.length ? lifetimeStats.surfaces.map((x) => <div className="lifetimeRow" key={x.surface}><span>{x.surface}</span><strong>{x.wins}–{x.played - x.wins} ({x.winPct}%)</strong></div>) : <div className="hint">No surface data.</div>}</div>
+                      
                     </div>
 
                     <div className="analyticsGrid"><div className="analyticsBox"><div className="analyticsBoxTitle">Best career record vs</div><div className="profileMatchup">{lifetimeStats.bestVs ? <><strong>{lifetimeStats.bestVs.name}</strong><span>{lifetimeStats.bestVs.wins}–{lifetimeStats.bestVs.losses} ({lifetimeStats.bestVs.winPct}%)</span></> : "—"}</div></div><div className="analyticsBox"><div className="analyticsBoxTitle">Worst career record vs</div><div className="profileMatchup">{lifetimeStats.worstVs ? <><strong>{lifetimeStats.worstVs.name}</strong><span>{lifetimeStats.worstVs.wins}–{lifetimeStats.worstVs.losses} ({lifetimeStats.worstVs.winPct}%)</span></> : "—"}</div></div></div>
@@ -2382,12 +2349,6 @@ export default function App() {
           <div>
             <div className="label">Date</div>
             <input className="textInput" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
-          </div>
-          <div>
-            <div className="label">Surface</div>
-            <select className="textInput" value={editSurface} onChange={(e) => setEditSurface(e.target.value)}>
-              {SURFACES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
           </div>
           <div>
             <div className="label">Winner</div>
@@ -2556,12 +2517,6 @@ export default function App() {
                 <div className="hint">Tip: add names first, then they appear here.</div>
               </div>
               <div>
-                <div className="label">Surface</div>
-                <select className="textInput tallOnMobile" value={surface} onChange={(e) => setSurface(e.target.value)} disabled={locked}>
-                  {SURFACES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
                 <div className="label">Winner</div>
                 <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
                   <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
@@ -2592,7 +2547,7 @@ export default function App() {
                   <table className="table">
                     <thead>
                       <tr>
-                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Surface</th><th>Winner</th><th>Score</th>{!locked ? <th style={{ textAlign: "right" }}>Actions</th> : null}
+                        <th>Date</th><th>Played for</th><th>Challenger</th><th>Opponent</th><th>Winner</th><th>Score</th>{!locked ? <th style={{ textAlign: "right" }}>Actions</th> : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -2602,7 +2557,6 @@ export default function App() {
                           <td>#{m.positionPlayedFor}</td>
                           <td>{String(m.score || "").startsWith("ADMIN:") ? m.p1Name : m.p1Name}</td>
                           <td>{String(m.score || "").startsWith("ADMIN:") ? "—" : m.p2Name}</td>
-                          <td>{m.surface || "—"}</td>
                           <td>{String(m.score || "").startsWith("ADMIN:") ? "Admin action" : m.winnerName}</td>
                           <td className="mono">{String(m.score || "").startsWith("ADMIN:") ? String(m.score).replace("ADMIN: ", "") : formatScore(m.score)}</td>
                           {!locked ? (
@@ -3125,7 +3079,6 @@ const css = `
   .barChart { display: grid; gap: 10px; }
   .barRow { display: grid; grid-template-columns: 54px minmax(80px, 1fr) 30px; gap: 9px; align-items: center; }
   .barLabel { font-size: 12px; font-weight: 750; color: rgba(255,255,255,0.75); }
-  .surfaceLabel { width: 105px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .analyticsGrid .analyticsBox:nth-child(2) .barRow { grid-template-columns: 112px minmax(80px, 1fr) 30px; }
   .barTrack { height: 10px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
   .barFill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, rgba(96,165,250,0.75), rgba(167,139,250,0.95)); }
