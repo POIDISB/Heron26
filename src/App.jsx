@@ -1229,6 +1229,22 @@ export default function App() {
     return map;
   }, [matches]);
   const topClimber = useMemo(() => [...calculatedPlayers].filter(p => !isWithdrawnPlayer(p) && String(p.name||"").trim()).sort((a,b)=>b.ladderProgress-a.ladderProgress || a.position-b.position)[0] || null, [calculatedPlayers]);
+  const seasonBannerStats = useMemo(() => {
+    const realMatches = matches.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
+    const activity = new Map();
+    for (const m of realMatches) {
+      activity.set(m.challengerPid, (activity.get(m.challengerPid) || 0) + 1);
+      activity.set(m.opponentPid, (activity.get(m.opponentPid) || 0) + 1);
+    }
+    const activePlayers = calculatedPlayers
+      .filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim())
+      .map((p) => ({ ...p, seasonMatches: activity.get(p.pid) || 0 }))
+      .sort((a, b) => b.seasonMatches - a.seasonMatches || a.position - b.position);
+    return {
+      mostActive: activePlayers[0] || null,
+      totalMatches: realMatches.length,
+    };
+  }, [matches, calculatedPlayers]);
 
   const matchesView = useMemo(() => {
     const byPid = new Map(players.map((p) => [p.pid, p]));
@@ -2427,8 +2443,25 @@ export default function App() {
                 <div className="hint">Top 3 • {divisionLabel}</div>
               </div>
             </div>
-            {topClimber && topClimber.ladderProgress > 0 ? <div className="topClimberBanner"><span>🚀 Top climber</span><strong>{topClimber.name}</strong><span>+{topClimber.ladderProgress} places</span></div> : null}
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
+            <div className="seasonHighlightsBanner" aria-label="Season highlights">
+              <div className="seasonHighlightItem">
+                <span className="seasonHighlightLabel">🚀 Highest Climber</span>
+                <strong>{topClimber ? topClimber.name : "—"}</strong>
+                <span className="seasonHighlightValue">{topClimber && topClimber.ladderProgress > 0 ? `+${topClimber.ladderProgress} places` : "—"}</span>
+              </div>
+              <div className="seasonHighlightDivider" aria-hidden="true" />
+              <div className="seasonHighlightItem">
+                <span className="seasonHighlightLabel">🎾 Most Active</span>
+                <strong>{seasonBannerStats.mostActive ? seasonBannerStats.mostActive.name : "—"}</strong>
+                <span className="seasonHighlightValue">{seasonBannerStats.mostActive ? `${seasonBannerStats.mostActive.seasonMatches} matches` : "—"}</span>
+              </div>
+              <div className="seasonHighlightDivider" aria-hidden="true" />
+              <div className="seasonHighlightItem">
+                <span className="seasonHighlightLabel">📊 Matches This Season</span>
+                <strong>{seasonBannerStats.totalMatches}</strong>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -3187,7 +3220,22 @@ const css = `
       display: block !important;
     }
   }
-  .topClimberBanner { display:flex; align-items:center; justify-content:center; gap:12px; padding:10px 14px; margin-bottom:12px; border:1px solid rgba(34,197,94,.35); background:rgba(34,197,94,.09); border-radius:12px; }
+  .seasonHighlightsBanner {
+    display:flex; align-items:center; justify-content:center; gap:16px; width:100%; margin-top:14px; padding:10px 14px;
+    border:1px solid rgba(34,197,94,.35); background:rgba(34,197,94,.09); border-radius:12px; overflow-x:auto; white-space:nowrap;
+  }
+  .seasonHighlightItem { display:flex; align-items:baseline; justify-content:center; gap:7px; min-width:0; flex:1 0 auto; }
+  .seasonHighlightLabel { color:rgba(255,255,255,.72); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+  .seasonHighlightItem strong { font-size:13px; font-weight:900; color:var(--text); }
+  .seasonHighlightValue { color:#86efac; font-size:12px; font-weight:800; }
+  .seasonHighlightDivider { width:1px; height:20px; flex:0 0 1px; background:rgba(255,255,255,.14); }
+  @media (max-width: 720px) {
+    .seasonHighlightsBanner { justify-content:flex-start; gap:12px; padding:9px 11px; scrollbar-width:none; }
+    .seasonHighlightsBanner::-webkit-scrollbar { display:none; }
+    .seasonHighlightItem { gap:5px; }
+    .seasonHighlightLabel, .seasonHighlightValue { font-size:10.5px; }
+    .seasonHighlightItem strong { font-size:11.5px; }
+  }
   .progressPositive { color:#4ade80; font-weight:800; }
   .progressNegative { color:#f87171; font-weight:800; }
   .progressNeutral { color:var(--muted); font-weight:700; }
