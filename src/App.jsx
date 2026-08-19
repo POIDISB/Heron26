@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  * Heron Tennis Summer Ladder 2026 — plain React + Supabase (shared realtime).
  *
  * Multi-ladder edition:
- * - Men's + Women's ladders in 1 app
+ * - Men's + Women's ladders in one app
  * - Top toggle switches between ladders
  * - Each ladder has fully separate players, matches, and playerCount
  * - Shared cloud sync via Supabase
@@ -1240,8 +1240,11 @@ export default function App() {
       .filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim())
       .map((p) => ({ ...p, seasonMatches: activity.get(p.pid) || 0 }))
       .sort((a, b) => b.seasonMatches - a.seasonMatches || a.position - b.position);
+    const maxMatches = activePlayers[0]?.seasonMatches || 0;
+    const mostActive = maxMatches > 0 ? activePlayers.filter((p) => p.seasonMatches === maxMatches) : [];
     return {
-      mostActive: activePlayers[0] || null,
+      mostActive,
+      mostActiveMatches: maxMatches,
       totalMatches: realMatches.length,
     };
   }, [matches, calculatedPlayers]);
@@ -2453,8 +2456,8 @@ export default function App() {
               <div className="seasonHighlightDivider" aria-hidden="true" />
               <div className="seasonHighlightItem">
                 <span className="seasonHighlightLabel">🎾 Most Active</span>
-                <strong>{seasonBannerStats.mostActive ? seasonBannerStats.mostActive.name : "—"}</strong>
-                <span className="seasonHighlightValue">{seasonBannerStats.mostActive ? `${seasonBannerStats.mostActive.seasonMatches} matches` : "—"}</span>
+                <strong>{seasonBannerStats.mostActive.length ? seasonBannerStats.mostActive.map((p) => p.name).join(" • ") : "—"}</strong>
+                <span className="seasonHighlightValue">{seasonBannerStats.mostActive.length ? `${seasonBannerStats.mostActiveMatches} matches` : "—"}</span>
               </div>
               <div className="seasonHighlightDivider" aria-hidden="true" />
               <div className="seasonHighlightItem">
@@ -2524,45 +2527,74 @@ export default function App() {
           <div className="cardHeader"><div><div className="cardTitle">Add Match</div><div className="hint">{divisionLabel} ladder • Add/Delete/Edit require PIN.</div></div></div>
           <div className="cardBody">
             {error ? <div className="errorBox">{error}</div> : null}
-            <div className="formGrid mobileStackFriendly">
-              <div>
-                <div className="label">Date</div>
-                <input className="textInput tallOnMobile" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
+            <div className="matchEntryLayout">
+              <div className="matchPlayersPanel">
+                <div className="matchPanelHeading">Players</div>
+                <div className="matchPlayerRow">
+                  <div className="matchPlayerNumber">1</div>
+                  <div className="matchPlayerField">
+                    <div className="label">Challenger</div>
+                    <select
+                      className="textInput tallOnMobile matchPlayerSelect"
+                      value={challengerPid}
+                      onChange={(e) => setChallengerPid(e.target.value)}
+                      disabled={locked}
+                    >
+                      <option value="">Select challenger…</option>
+                      {selectablePlayers
+                        .filter((p) => p.pid !== opponent?.pid)
+                        .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="matchPlayerRow">
+                  <div className="matchPlayerNumber">2</div>
+                  <div className="matchPlayerField">
+                    <div className="label">Opponent</div>
+                    <select
+                      className="textInput tallOnMobile matchPlayerSelect"
+                      value={opponent?.pid || ""}
+                      onChange={(e) => {
+                        const selected = players.find((p) => p.pid === e.target.value);
+                        if (selected) setMatchPos(String(selected.position));
+                      }}
+                      disabled={locked}
+                    >
+                      {selectablePlayers
+                        .filter((p) => p.pid !== challengerPid)
+                        .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="matchPositionNote">
+                  Playing for <strong>Position #{opponent?.position || matchPos}</strong>{opponent?.name?.trim() ? ` • currently ${opponent.name}` : ""}
+                </div>
               </div>
-              <div>
-                <div className="label">Position being played for</div>
-                <select className="textInput tallOnMobile" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
-                  {Array.from({ length: playerCount }, (_, i) => {
-                    const pos = i + 1;
-                    const p = players.find((x) => x.position === pos);
-                    const nm = p?.name?.trim();
-                    return <option key={pos} value={String(pos)}>#{pos}{nm ? ` (${nm})` : ""}</option>;
-                  })}
-                </select>
-                <div className="hint">Selected: {opponentLabel}</div>
-              </div>
-              <div>
-                <div className="label">Challenger</div>
-                <select className="textInput tallOnMobile" value={challengerPid} onChange={(e) => setChallengerPid(e.target.value)} disabled={locked}>
-                  <option value="">Select…</option>
-                  {selectablePlayers.map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
-                </select>
-                <div className="hint">Tip: add names first, then they appear here.</div>
-              </div>
-              <div>
-                <div className="label">Winner</div>
-                <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
-                  <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
-                  <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
-                </select>
-              </div>
-            </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-              <input className="textInput tallOnMobile" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
-              <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
-              <button className="btn fullWidthOnMobile" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>Add match</button>
+              <div className="matchDetailsPanel">
+                <div className="matchPanelHeading">Match details</div>
+                <div className="matchDetailsGrid">
+                  <div>
+                    <div className="label">Date</div>
+                    <input className="textInput tallOnMobile" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
+                  </div>
+                  <div>
+                    <div className="label">Winner</div>
+                    <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
+                      <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
+                      <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="matchScoreBlock">
+                  <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
+                  <input className="textInput tallOnMobile matchScoreInput" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
+                  <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
+                </div>
+
+                <button className="btn fullWidthOnMobile matchSubmitBtn" onClick={requestAddMatch} disabled={locked}>Add match</button>
+              </div>
             </div>
 
             {locked ? <div className="hint" style={{ marginTop: 10 }}>Locked: nothing is editable. Admin unlock to enter results.</div> : null}
@@ -2954,6 +2986,67 @@ const css = `
   .diff { font-weight: 900; font-variant-numeric: tabular-nums; }
   .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
+  .matchEntryLayout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
+    gap: 14px;
+    align-items: stretch;
+  }
+  .matchPlayersPanel, .matchDetailsPanel {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.025);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .matchPanelHeading {
+    font-size: 12px;
+    font-weight: 900;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 10px;
+  }
+  .matchPlayerRow {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+  .matchPlayerRow + .matchPlayerRow { margin-top: 9px; }
+  .matchPlayerNumber {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 900;
+  }
+  .matchPlayerField { min-width: 0; }
+  .matchPlayerField .label { margin-bottom: 4px; }
+  .matchPlayerSelect { font-weight: 700; }
+  .matchPositionNote {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.18);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .matchPositionNote strong { color: var(--text); }
+  .matchDetailsGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .matchScoreBlock { margin-top: 10px; }
+  .matchScoreInput { font-variant-numeric: tabular-nums; }
+  .matchSubmitBtn { margin-top: 10px; width: 100%; }
+
   .formGrid { display: grid; grid-template-columns: 1fr; gap: 10px; }
   @media (min-width: 980px) { .formGrid { grid-template-columns: repeat(5, 1fr); } }
 
@@ -3180,6 +3273,11 @@ const css = `
     }
     .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
+    .matchEntryLayout { grid-template-columns: 1fr; gap: 10px; }
+    .matchPlayersPanel, .matchDetailsPanel { padding: 12px; }
+    .matchDetailsGrid { grid-template-columns: 1fr; }
+    .matchPlayerRow { grid-template-columns: 30px minmax(0, 1fr); gap: 8px; }
+    .matchPlayerNumber { width: 28px; height: 28px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
     .ladderViewHeader { align-items: stretch; }
     .ladderViewToggle { width: 100%; }
