@@ -929,6 +929,7 @@ export default function App() {
   const [challengerPid, setChallengerPid] = useState("");
   const [winner, setWinner] = useState("p2");
   const [score, setScore] = useState("");
+  const [scoreCells, setScoreCells] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState("");
 
   const [dropPeriodKey, setDropPeriodKey] = useState("apr26_may31");
@@ -1014,6 +1015,7 @@ export default function App() {
     setMatchPos("1");
     setChallengerPid("");
     setScore("");
+    setScoreCells(["", "", "", "", "", ""]);
     setError("");
     setMatchDate(formatDateISO(new Date()));
     setManualMovePid("");
@@ -1164,6 +1166,23 @@ export default function App() {
   }, [matchPos, players]);
 
   const challenger = useMemo(() => players.find((p) => p.pid === challengerPid) || null, [challengerPid, players]);
+
+  function updateScoreCell(row, col, rawValue) {
+    const cleaned = String(rawValue || "").replace(/\D/g, "").slice(0, 2);
+    setScoreCells((prev) => {
+      const next = [...prev];
+      next[row * 3 + col] = cleaned;
+
+      const sets = [];
+      for (let i = 0; i < 3; i++) {
+        const p1 = next[i];
+        const p2 = next[3 + i];
+        if (p1 !== "" && p2 !== "") sets.push(`${p1}-${p2}`);
+      }
+      setScore(sets.join(" "));
+      return next;
+    });
+  }
 
   const selectablePlayers = useMemo(
     () =>
@@ -1512,6 +1531,7 @@ export default function App() {
       setDirty(false);
       setMatchAddedOpen(true);
       setScore("");
+      setScoreCells(["", "", "", "", "", ""]);
       setMatchDate(formatDateISO(new Date()));
     } catch (e) {
       setError(String(e?.message || e || "Failed to save to cloud."));
@@ -2527,10 +2547,14 @@ export default function App() {
           <div className="cardHeader"><div><div className="cardTitle">Add Match</div><div className="hint">{divisionLabel} ladder • Add/Delete/Edit require PIN.</div></div></div>
           <div className="cardBody">
             {error ? <div className="errorBox">{error}</div> : null}
-            <div className="matchEntryLayout">
-              <div className="matchPlayersPanel">
-                <div className="matchPanelHeading">Players</div>
-                <div className="matchPlayerRow">
+            <div className="matchEntryLayout scorecardEntryLayout">
+              <div className="matchPlayersPanel scorecardPlayersPanel">
+                <div className="scorecardHeaderRow">
+                  <div className="matchPanelHeading">Players</div>
+                  <div className="scoreSetHeadings" aria-hidden="true"><span>Set 1</span><span>Set 2</span><span>Set 3</span></div>
+                </div>
+
+                <div className="matchPlayerRow scorecardPlayerRow">
                   <div className="matchPlayerNumber">1</div>
                   <div className="matchPlayerField">
                     <div className="label">Challenger</div>
@@ -2546,8 +2570,14 @@ export default function App() {
                         .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
                     </select>
                   </div>
+                  <div className="scoreCellGroup">
+                    {[0, 1, 2].map((col) => (
+                      <input key={col} className="scoreCell" type="text" inputMode="numeric" aria-label={`Challenger set ${col + 1}`} value={scoreCells[col]} onChange={(e) => updateScoreCell(0, col, e.target.value)} disabled={locked} />
+                    ))}
+                  </div>
                 </div>
-                <div className="matchPlayerRow">
+
+                <div className="matchPlayerRow scorecardPlayerRow">
                   <div className="matchPlayerNumber">2</div>
                   <div className="matchPlayerField">
                     <div className="label">Opponent</div>
@@ -2565,10 +2595,17 @@ export default function App() {
                         .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
                     </select>
                   </div>
+                  <div className="scoreCellGroup">
+                    {[0, 1, 2].map((col) => (
+                      <input key={col} className="scoreCell" type="text" inputMode="numeric" aria-label={`Opponent set ${col + 1}`} value={scoreCells[3 + col]} onChange={(e) => updateScoreCell(1, col, e.target.value)} disabled={locked} />
+                    ))}
+                  </div>
                 </div>
+
                 <div className="matchPositionNote">
                   Playing for <strong>Position #{opponent?.position || matchPos}</strong>{opponent?.name?.trim() ? ` • currently ${opponent.name}` : ""}
                 </div>
+                <div className="hint scorecardHint">Leave Set 3 blank for a straight-sets result. A match tie-break can be entered normally, e.g. 10–8.</div>
               </div>
 
               <div className="matchDetailsPanel">
@@ -2586,13 +2623,6 @@ export default function App() {
                     </select>
                   </div>
                 </div>
-
-                <div className="matchScoreBlock">
-                  <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-                  <input className="textInput tallOnMobile matchScoreInput" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
-                  <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
-                </div>
-
                 <button className="btn fullWidthOnMobile matchSubmitBtn" onClick={requestAddMatch} disabled={locked}>Add match</button>
               </div>
             </div>
@@ -3028,6 +3058,49 @@ const css = `
   .matchPlayerField { min-width: 0; }
   .matchPlayerField .label { margin-bottom: 4px; }
   .matchPlayerSelect { font-weight: 700; }
+  .scorecardHeaderRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 164px;
+    gap: 10px;
+    align-items: end;
+  }
+  .scorecardHeaderRow .matchPanelHeading { margin-bottom: 6px; }
+  .scoreSetHeadings {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    gap: 10px;
+    justify-content: end;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 800;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+  }
+  .scorecardPlayerRow { grid-template-columns: 34px minmax(0, 1fr) 164px; }
+  .scoreCellGroup {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    gap: 10px;
+    align-self: end;
+    justify-content: end;
+  }
+  .scoreCell {
+    width: 48px;
+    height: 42px;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.07);
+    color: var(--text);
+    text-align: center;
+    font-size: 16px;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+  }
+  .scoreCell:focus { border-color: rgba(255,255,255,0.38); }
+  .scoreCell:disabled { opacity: .58; }
+  .scorecardHint { margin-top: 8px; }
   .matchPositionNote {
     margin-top: 10px;
     padding: 8px 10px;
@@ -3277,6 +3350,11 @@ const css = `
     .matchPlayersPanel, .matchDetailsPanel { padding: 12px; }
     .matchDetailsGrid { grid-template-columns: 1fr; }
     .matchPlayerRow { grid-template-columns: 30px minmax(0, 1fr); gap: 8px; }
+    .scorecardHeaderRow { grid-template-columns: minmax(0, 1fr) 128px; gap: 6px; }
+    .scoreSetHeadings { grid-template-columns: repeat(3, 38px); gap: 7px; font-size: 9px; }
+    .scorecardPlayerRow { grid-template-columns: 28px minmax(0, 1fr) 128px; gap: 7px; }
+    .scoreCellGroup { grid-template-columns: repeat(3, 38px); gap: 7px; }
+    .scoreCell { width: 38px; height: 42px; }
     .matchPlayerNumber { width: 28px; height: 28px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
     .ladderViewHeader { align-items: stretch; }
