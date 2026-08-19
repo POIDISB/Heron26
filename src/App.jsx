@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  * Heron Tennis Summer Ladder 2026 — plain React + Supabase (shared realtime).
  *
  * Multi-ladder edition:
- * - Men's + Women's ladders in one app
+ * - Men's + Women's ladders in 1 app
  * - Top toggle switches between ladders
  * - Each ladder has fully separate players, matches, and playerCount
  * - Shared cloud sync via Supabase
