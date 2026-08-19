@@ -927,7 +927,6 @@ export default function App() {
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
   const [matchPos, setMatchPos] = useState("1");
   const [challengerPid, setChallengerPid] = useState("");
-  const [winner, setWinner] = useState("p2");
   const [score, setScore] = useState("");
   const [scoreCells, setScoreCells] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState("");
@@ -962,6 +961,7 @@ export default function App() {
   const [pinPurpose, setPinPurpose] = useState("unlock");
   const [pinPayload, setPinPayload] = useState(null);
   const pinRef = useRef(null);
+  const matchDateManuallyChangedRef = useRef(false);
 
   const liveRef = useRef(null);
   const ladderRef = useRef(null);
@@ -1011,12 +1011,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    setWinner("p2");
     setMatchPos("1");
     setChallengerPid("");
     setScore("");
     setScoreCells(["", "", "", "", "", ""]);
     setError("");
+    matchDateManuallyChangedRef.current = false;
     setMatchDate(formatDateISO(new Date()));
     setManualMovePid("");
     setManualMovePosition("1");
@@ -1028,12 +1028,17 @@ export default function App() {
   }, [playerCount, matchPos]);
 
   useEffect(() => {
-    const refreshDateIfBlank = () => {
-      if (!matchDate) setMatchDate(formatDateISO(new Date()));
+    const refreshDefaultMatchDate = () => {
+      if (!matchDateManuallyChangedRef.current) setMatchDate(formatDateISO(new Date()));
     };
-    window.addEventListener("focus", refreshDateIfBlank);
-    return () => window.removeEventListener("focus", refreshDateIfBlank);
-  }, [matchDate]);
+    window.addEventListener("focus", refreshDefaultMatchDate);
+    return () => window.removeEventListener("focus", refreshDefaultMatchDate);
+  }, []);
+
+  useEffect(() => {
+    // Keep an untouched Add Match form pinned to today's date, including across midnight.
+    if (!matchDateManuallyChangedRef.current) setMatchDate(formatDateISO(new Date(nowTick)));
+  }, [nowTick]);
 
   function scrollToRef(ref) {
     ref?.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1183,6 +1188,23 @@ export default function App() {
       return next;
     });
   }
+
+  const scoreOutcome = useMemo(() => {
+    const parsed = parseScore(score);
+    if (!parsed.valid) return { valid: false, winnerId: "", label: "Awaiting result" };
+
+    const validity = validateSets(parsed.sets);
+    if (!validity.ok) return { valid: false, winnerId: "", label: "Awaiting result" };
+
+    const { p1Sets, p2Sets } = computeFromSets(parsed.sets);
+    const winnerId = p1Sets > p2Sets ? "p1" : "p2";
+    const winningPlayer = winnerId === "p1" ? challenger : opponent;
+    return {
+      valid: true,
+      winnerId,
+      label: String(winningPlayer?.name || "").trim() || (winnerId === "p1" ? "Challenger" : "Opponent"),
+    };
+  }, [score, challenger, opponent]);
 
   const selectablePlayers = useMemo(
     () =>
@@ -1464,11 +1486,12 @@ export default function App() {
     if (!validity.ok) return setError(validity.message);
 
     const { p1Sets, p2Sets, p1Games, p2Games } = computeFromSets(parsed.sets);
+    const matchWinner = p1Sets > p2Sets ? "p1" : "p2";
     const monthKey = monthKeyFromDateISO(matchDate);
     const challengerStartPos = p1.position;
     const opponentStartPos = p2.position;
 
-    const shouldMove = winner === "p1" && challengerStartPos > opponentStartPos;
+    const shouldMove = matchWinner === "p1" && challengerStartPos > opponentStartPos;
     const moved = shouldMove ? applyLadderMove(players, p1.pid, opponentStartPos) : { players, applied: false };
 
     const matchRecord = {
@@ -1478,10 +1501,10 @@ export default function App() {
       positionPlayedFor: opponentStartPos,
       challengerPid: p1.pid,
       opponentPid: p2.pid,
-      winnerId: winner,
+      winnerId: matchWinner,
       challengerName: p1.name || "",
       opponentName: p2.name || "",
-      winnerNameSnapshot: winner === "p1" ? (p1.name || "") : (p2.name || ""),
+      winnerNameSnapshot: matchWinner === "p1" ? (p1.name || "") : (p2.name || ""),
       score: String(score || "").trim(),
       surface: "",
       challengerStartPos,
@@ -1502,7 +1525,7 @@ export default function App() {
             const setsLost = isP1 ? p2Sets : p1Sets;
             const gamesWon = isP1 ? p1Games : p2Games;
             const gamesLost = isP1 ? p2Games : p1Games;
-            const didWin = (winner === "p1" && isP1) || (winner === "p2" && !isP1);
+            const didWin = (matchWinner === "p1" && isP1) || (matchWinner === "p2" && !isP1);
             const next = {
               ...p,
               matchesPlayed: (p.matchesPlayed || 0) + 1,
@@ -1532,6 +1555,7 @@ export default function App() {
       setMatchAddedOpen(true);
       setScore("");
       setScoreCells(["", "", "", "", "", ""]);
+      matchDateManuallyChangedRef.current = false;
       setMatchDate(formatDateISO(new Date()));
     } catch (e) {
       setError(String(e?.message || e || "Failed to save to cloud."));
@@ -2613,14 +2637,26 @@ export default function App() {
                 <div className="matchDetailsGrid">
                   <div>
                     <div className="label">Date</div>
-                    <input className="textInput tallOnMobile" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
+                    <input
+                      className="textInput tallOnMobile"
+                      type="date"
+                      value={matchDate}
+                      onChange={(e) => {
+                        matchDateManuallyChangedRef.current = true;
+                        setMatchDate(e.target.value);
+                      }}
+                      disabled={locked}
+                    />
                   </div>
                   <div>
                     <div className="label">Winner</div>
-                    <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
-                      <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
-                      <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
-                    </select>
+                    <div
+                      className={`textInput tallOnMobile autoWinnerField${scoreOutcome.valid ? " resolved" : ""}`}
+                      aria-live="polite"
+                      aria-label="Calculated match winner"
+                    >
+                      {scoreOutcome.label}
+                    </div>
                   </div>
                 </div>
                 <button className="btn fullWidthOnMobile matchSubmitBtn" onClick={requestAddMatch} disabled={locked}>Add match</button>
@@ -3100,6 +3136,17 @@ const css = `
   }
   .scoreCell:focus { border-color: rgba(255,255,255,0.38); }
   .scoreCell:disabled { opacity: .58; }
+  .autoWinnerField {
+    display: flex;
+    align-items: center;
+    color: var(--muted);
+    cursor: default;
+    user-select: none;
+  }
+  .autoWinnerField.resolved {
+    color: var(--text);
+    font-weight: 800;
+  }
   .scorecardHint { margin-top: 8px; }
   .matchPositionNote {
     margin-top: 10px;
