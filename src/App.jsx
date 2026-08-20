@@ -1269,7 +1269,19 @@ export default function App() {
     }
     return map;
   }, [matches]);
-  const topClimber = useMemo(() => [...calculatedPlayers].filter(p => !isWithdrawnPlayer(p) && String(p.name||"").trim()).sort((a,b)=>b.ladderProgress-a.ladderProgress || a.position-b.position)[0] || null, [calculatedPlayers]);
+  const topClimbers = useMemo(() => {
+    const eligible = calculatedPlayers
+      .filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim() && p.ladderProgress > 0)
+      .sort((a, b) => b.ladderProgress - a.ladderProgress || a.position - b.position);
+
+    const topProgressLevels = [...new Set(eligible.map((p) => p.ladderProgress))].slice(0, 3);
+    return topProgressLevels.map((progress, index) => ({
+      rank: index + 1,
+      progress,
+      players: eligible.filter((p) => p.ladderProgress === progress),
+    }));
+  }, [calculatedPlayers]);
+
   const seasonBannerStats = useMemo(() => {
     const realMatches = matches.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
     const activity = new Map();
@@ -2493,9 +2505,15 @@ export default function App() {
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
             <div className="seasonHighlightsBanner" aria-label="Season highlights">
               <div className="seasonHighlightItem">
-                <span className="seasonHighlightLabel">🚀 Highest Climber</span>
-                <strong>{topClimber ? topClimber.name : "—"}</strong>
-                <span className="seasonHighlightValue">{topClimber && topClimber.ladderProgress > 0 ? `+${topClimber.ladderProgress} places` : "—"}</span>
+                <span className="seasonHighlightLabel">🚀 Highest Climbers</span>
+                <strong>
+                  {topClimbers.length
+                    ? topClimbers
+                        .map((group) => `${group.rank}. ${group.players.map((p) => p.name).join(" / ")} (+${group.progress})`)
+                        .join(" • ")
+                    : "—"}
+                </strong>
+                <span className="seasonHighlightValue">Top 3 upward progression</span>
               </div>
               <div className="seasonHighlightDivider" aria-hidden="true" />
               <div className="seasonHighlightItem">
