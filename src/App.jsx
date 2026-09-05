@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  * Heron Tennis Summer Ladder 2026 — plain React + Supabase (shared realtime).
  *
  * Multi-ladder edition:
- * - Men's + Women's + Premier ladders in one app
+ * - Men's + Women's ladders in one app
  * - Top toggle switches between ladders
  * - Each ladder has fully separate players, matches, and playerCount
  * - Shared cloud sync via Supabase
@@ -19,7 +19,6 @@ const CAPACITY = 60;
 const DIVISIONS = [
   { key: "mens", label: "Men's" },
   { key: "womens", label: "Women's" },
-  { key: "premier", label: "Premier" },
 ];
 
 
@@ -129,7 +128,6 @@ function defaultState() {
   return {
     mens: createDivisionState("mens"),
     womens: createDivisionState("womens"),
-    premier: createDivisionState("premier"),
   };
 }
 
@@ -697,9 +695,7 @@ async function fetchSeasonMeta() {
   return {
     seasons: seasonRes.data || [],
     defaultSeasonId: String(settings.default_public_season || LEGACY_SEASON_ID),
-    defaultDivision: DIVISIONS.some((d) => d.key === settings.default_public_division)
-      ? settings.default_public_division
-      : "mens",
+    defaultDivision: settings.default_public_division === "womens" ? "womens" : "mens",
   };
 }
 
@@ -709,13 +705,13 @@ async function fetchCloudState(seasonId) {
   const [pRes, mRes, sRes] = await Promise.all([
     supabase.from("players").select("*").eq("season_id", sid).order("division", { ascending: true }).order("position", { ascending: true }),
     supabase.from("matches").select("*").eq("season_id", sid).order("created_at", { ascending: false }),
-    supabase.from("settings").select("*").in("key", DIVISIONS.map((d) => `playerCount_${sid}_${d.key}`)),
+    supabase.from("settings").select("*").in("key", [`playerCount_${sid}_mens`, `playerCount_${sid}_womens`]),
   ]);
   if (pRes.error) throw new Error(pRes.error.message);
   if (mRes.error) throw new Error(mRes.error.message);
   if (sRes.error) throw new Error(sRes.error.message);
   const state = defaultState();
-  for (const division of DIVISIONS.map((d) => d.key)) {
+  for (const division of ["mens", "womens"]) {
     const rows = (pRes.data || []).filter((r) => String(r.division || "mens") === division);
     const byPos = new Map(rows.map((row) => [Number(row.position), row]));
     const players = [];
@@ -899,9 +895,9 @@ async function adminAction(pin, action, payload = {}) {
 async function saveCloudState(pin, fullState, seasonId) {
   const payload = {
     seasonId,
-    playerCounts: Object.fromEntries(DIVISIONS.map((d) => [d.key, fullState[d.key].playerCount])),
-    players: DIVISIONS.flatMap((d) => fullState[d.key].players),
-    matches: DIVISIONS.flatMap((d) => fullState[d.key].matches),
+    playerCounts: { mens: fullState.mens.playerCount, womens: fullState.womens.playerCount },
+    players: [...fullState.mens.players, ...fullState.womens.players],
+    matches: [...fullState.mens.matches, ...fullState.womens.matches],
   };
   return adminAction(pin, "saveState", payload);
 }
@@ -2100,7 +2096,7 @@ export default function App() {
     pinPurpose === "unlock"
       ? "Admin unlock"
       : pinPurpose === "add"
-      ? `Admin PIN required to add ${DIVISIONS.find((d) => d.key === activeDivision)?.label || "Ladder"} match`
+      ? `Admin PIN required to add ${activeDivision === "mens" ? "Men's" : "Women's"} match`
       : pinPurpose === "delete"
       ? "Admin PIN required to delete match"
       : pinPurpose === "edit"
@@ -2137,7 +2133,7 @@ export default function App() {
     return nm ? `#${pos} (${nm})` : `#${pos}`;
   }, [matchPos, playerCount, players]);
 
-  const divisionLabel = DIVISIONS.find((d) => d.key === activeDivision)?.label || "Ladder";
+  const divisionLabel = activeDivision === "mens" ? "Men's" : "Women's";
   const countdownText = (() => {
     if (!activeSeason?.start_date || !activeSeason?.end_date) return "Season dates not set";
     const start = new Date(`${activeSeason.start_date}T00:00:00`);
