@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  * Heron Tennis Summer Ladder 2026 — plain React + Supabase (shared realtime).
  *
  * Multi-ladder edition:
- * - Men's + Women's ladders in one app
+ * - Men's + Women's + Premier ladders in one app
  * - Top toggle switches between ladders
  * - Each ladder has fully separate players, matches, and playerCount
  * - Shared cloud sync via Supabase
@@ -19,6 +19,7 @@ const CAPACITY = 60;
 const DIVISIONS = [
   { key: "mens", label: "Men's" },
   { key: "womens", label: "Women's" },
+  { key: "premier", label: "Premier" },
 ];
 
 
@@ -128,6 +129,7 @@ function defaultState() {
   return {
     mens: createDivisionState("mens"),
     womens: createDivisionState("womens"),
+    premier: createDivisionState("premier"),
   };
 }
 
@@ -695,7 +697,9 @@ async function fetchSeasonMeta() {
   return {
     seasons: seasonRes.data || [],
     defaultSeasonId: String(settings.default_public_season || LEGACY_SEASON_ID),
-    defaultDivision: settings.default_public_division === "womens" ? "womens" : "mens",
+    defaultDivision: DIVISIONS.some((d) => d.key === settings.default_public_division)
+      ? settings.default_public_division
+      : "mens",
   };
 }
 
@@ -705,13 +709,13 @@ async function fetchCloudState(seasonId) {
   const [pRes, mRes, sRes] = await Promise.all([
     supabase.from("players").select("*").eq("season_id", sid).order("division", { ascending: true }).order("position", { ascending: true }),
     supabase.from("matches").select("*").eq("season_id", sid).order("created_at", { ascending: false }),
-    supabase.from("settings").select("*").in("key", [`playerCount_${sid}_mens`, `playerCount_${sid}_womens`]),
+    supabase.from("settings").select("*").in("key", DIVISIONS.map((d) => `playerCount_${sid}_${d.key}`)),
   ]);
   if (pRes.error) throw new Error(pRes.error.message);
   if (mRes.error) throw new Error(mRes.error.message);
   if (sRes.error) throw new Error(sRes.error.message);
   const state = defaultState();
-  for (const division of ["mens", "womens"]) {
+  for (const division of DIVISIONS.map((d) => d.key)) {
     const rows = (pRes.data || []).filter((r) => String(r.division || "mens") === division);
     const byPos = new Map(rows.map((row) => [Number(row.position), row]));
     const players = [];
@@ -895,9 +899,9 @@ async function adminAction(pin, action, payload = {}) {
 async function saveCloudState(pin, fullState, seasonId) {
   const payload = {
     seasonId,
-    playerCounts: { mens: fullState.mens.playerCount, womens: fullState.womens.playerCount },
-    players: [...fullState.mens.players, ...fullState.womens.players],
-    matches: [...fullState.mens.matches, ...fullState.womens.matches],
+    playerCounts: Object.fromEntries(DIVISIONS.map((d) => [d.key, fullState[d.key].playerCount])),
+    players: DIVISIONS.flatMap((d) => fullState[d.key].players),
+    matches: DIVISIONS.flatMap((d) => fullState[d.key].matches),
   };
   return adminAction(pin, "saveState", payload);
 }
@@ -927,8 +931,8 @@ export default function App() {
   const [matchDate, setMatchDate] = useState(formatDateISO(new Date()));
   const [matchPos, setMatchPos] = useState("1");
   const [challengerPid, setChallengerPid] = useState("");
-  const [winner, setWinner] = useState("p2");
   const [score, setScore] = useState("");
+  const [scoreCells, setScoreCells] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState("");
 
   const [dropPeriodKey, setDropPeriodKey] = useState("apr26_may31");
@@ -961,6 +965,7 @@ export default function App() {
   const [pinPurpose, setPinPurpose] = useState("unlock");
   const [pinPayload, setPinPayload] = useState(null);
   const pinRef = useRef(null);
+  const matchDateManuallyChangedRef = useRef(false);
 
   const liveRef = useRef(null);
   const ladderRef = useRef(null);
@@ -1010,11 +1015,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    setWinner("p2");
     setMatchPos("1");
     setChallengerPid("");
     setScore("");
+    setScoreCells(["", "", "", "", "", ""]);
     setError("");
+    matchDateManuallyChangedRef.current = false;
     setMatchDate(formatDateISO(new Date()));
     setManualMovePid("");
     setManualMovePosition("1");
@@ -1026,12 +1032,17 @@ export default function App() {
   }, [playerCount, matchPos]);
 
   useEffect(() => {
-    const refreshDateIfBlank = () => {
-      if (!matchDate) setMatchDate(formatDateISO(new Date()));
+    const refreshDefaultMatchDate = () => {
+      if (!matchDateManuallyChangedRef.current) setMatchDate(formatDateISO(new Date()));
     };
-    window.addEventListener("focus", refreshDateIfBlank);
-    return () => window.removeEventListener("focus", refreshDateIfBlank);
-  }, [matchDate]);
+    window.addEventListener("focus", refreshDefaultMatchDate);
+    return () => window.removeEventListener("focus", refreshDefaultMatchDate);
+  }, []);
+
+  useEffect(() => {
+    // Keep an untouched Add Match form pinned to today's date, including across midnight.
+    if (!matchDateManuallyChangedRef.current) setMatchDate(formatDateISO(new Date(nowTick)));
+  }, [nowTick]);
 
   function scrollToRef(ref) {
     ref?.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1165,6 +1176,40 @@ export default function App() {
 
   const challenger = useMemo(() => players.find((p) => p.pid === challengerPid) || null, [challengerPid, players]);
 
+  function updateScoreCell(row, col, rawValue) {
+    const cleaned = String(rawValue || "").replace(/\D/g, "").slice(0, 2);
+    setScoreCells((prev) => {
+      const next = [...prev];
+      next[row * 3 + col] = cleaned;
+
+      const sets = [];
+      for (let i = 0; i < 3; i++) {
+        const p1 = next[i];
+        const p2 = next[3 + i];
+        if (p1 !== "" && p2 !== "") sets.push(`${p1}-${p2}`);
+      }
+      setScore(sets.join(" "));
+      return next;
+    });
+  }
+
+  const scoreOutcome = useMemo(() => {
+    const parsed = parseScore(score);
+    if (!parsed.valid) return { valid: false, winnerId: "", label: "Awaiting result" };
+
+    const validity = validateSets(parsed.sets);
+    if (!validity.ok) return { valid: false, winnerId: "", label: "Awaiting result" };
+
+    const { p1Sets, p2Sets } = computeFromSets(parsed.sets);
+    const winnerId = p1Sets > p2Sets ? "p1" : "p2";
+    const winningPlayer = winnerId === "p1" ? challenger : opponent;
+    return {
+      valid: true,
+      winnerId,
+      label: String(winningPlayer?.name || "").trim() || (winnerId === "p1" ? "Challenger" : "Opponent"),
+    };
+  }, [score, challenger, opponent]);
+
   const selectablePlayers = useMemo(
     () =>
       players
@@ -1228,7 +1273,19 @@ export default function App() {
     }
     return map;
   }, [matches]);
-  const topClimber = useMemo(() => [...calculatedPlayers].filter(p => !isWithdrawnPlayer(p) && String(p.name||"").trim()).sort((a,b)=>b.ladderProgress-a.ladderProgress || a.position-b.position)[0] || null, [calculatedPlayers]);
+  const topClimbers = useMemo(() => {
+    const eligible = calculatedPlayers
+      .filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim() && p.ladderProgress > 0)
+      .sort((a, b) => b.ladderProgress - a.ladderProgress || a.position - b.position);
+
+    const topProgressLevels = [...new Set(eligible.map((p) => p.ladderProgress))].slice(0, 3);
+    return topProgressLevels.map((progress, index) => ({
+      rank: index + 1,
+      progress,
+      players: eligible.filter((p) => p.ladderProgress === progress),
+    }));
+  }, [calculatedPlayers]);
+
   const seasonBannerStats = useMemo(() => {
     const realMatches = matches.filter((m) => !String(m.score || "").startsWith("ADMIN:"));
     const activity = new Map();
@@ -1240,8 +1297,11 @@ export default function App() {
       .filter((p) => !isWithdrawnPlayer(p) && String(p.name || "").trim())
       .map((p) => ({ ...p, seasonMatches: activity.get(p.pid) || 0 }))
       .sort((a, b) => b.seasonMatches - a.seasonMatches || a.position - b.position);
+    const maxMatches = activePlayers[0]?.seasonMatches || 0;
+    const mostActive = maxMatches > 0 ? activePlayers.filter((p) => p.seasonMatches === maxMatches) : [];
     return {
-      mostActive: activePlayers[0] || null,
+      mostActive,
+      mostActiveMatches: maxMatches,
       totalMatches: realMatches.length,
     };
   }, [matches, calculatedPlayers]);
@@ -1442,11 +1502,12 @@ export default function App() {
     if (!validity.ok) return setError(validity.message);
 
     const { p1Sets, p2Sets, p1Games, p2Games } = computeFromSets(parsed.sets);
+    const matchWinner = p1Sets > p2Sets ? "p1" : "p2";
     const monthKey = monthKeyFromDateISO(matchDate);
     const challengerStartPos = p1.position;
     const opponentStartPos = p2.position;
 
-    const shouldMove = winner === "p1" && challengerStartPos > opponentStartPos;
+    const shouldMove = matchWinner === "p1" && challengerStartPos > opponentStartPos;
     const moved = shouldMove ? applyLadderMove(players, p1.pid, opponentStartPos) : { players, applied: false };
 
     const matchRecord = {
@@ -1456,10 +1517,10 @@ export default function App() {
       positionPlayedFor: opponentStartPos,
       challengerPid: p1.pid,
       opponentPid: p2.pid,
-      winnerId: winner,
+      winnerId: matchWinner,
       challengerName: p1.name || "",
       opponentName: p2.name || "",
-      winnerNameSnapshot: winner === "p1" ? (p1.name || "") : (p2.name || ""),
+      winnerNameSnapshot: matchWinner === "p1" ? (p1.name || "") : (p2.name || ""),
       score: String(score || "").trim(),
       surface: "",
       challengerStartPos,
@@ -1480,7 +1541,7 @@ export default function App() {
             const setsLost = isP1 ? p2Sets : p1Sets;
             const gamesWon = isP1 ? p1Games : p2Games;
             const gamesLost = isP1 ? p2Games : p1Games;
-            const didWin = (winner === "p1" && isP1) || (winner === "p2" && !isP1);
+            const didWin = (matchWinner === "p1" && isP1) || (matchWinner === "p2" && !isP1);
             const next = {
               ...p,
               matchesPlayed: (p.matchesPlayed || 0) + 1,
@@ -1509,6 +1570,8 @@ export default function App() {
       setDirty(false);
       setMatchAddedOpen(true);
       setScore("");
+      setScoreCells(["", "", "", "", "", ""]);
+      matchDateManuallyChangedRef.current = false;
       setMatchDate(formatDateISO(new Date()));
     } catch (e) {
       setError(String(e?.message || e || "Failed to save to cloud."));
@@ -2037,7 +2100,7 @@ export default function App() {
     pinPurpose === "unlock"
       ? "Admin unlock"
       : pinPurpose === "add"
-      ? `Admin PIN required to add ${activeDivision === "mens" ? "Men's" : "Women's"} match`
+      ? `Admin PIN required to add ${DIVISIONS.find((d) => d.key === activeDivision)?.label || "Ladder"} match`
       : pinPurpose === "delete"
       ? "Admin PIN required to delete match"
       : pinPurpose === "edit"
@@ -2074,7 +2137,7 @@ export default function App() {
     return nm ? `#${pos} (${nm})` : `#${pos}`;
   }, [matchPos, playerCount, players]);
 
-  const divisionLabel = activeDivision === "mens" ? "Men's" : "Women's";
+  const divisionLabel = DIVISIONS.find((d) => d.key === activeDivision)?.label || "Ladder";
   const countdownText = (() => {
     if (!activeSeason?.start_date || !activeSeason?.end_date) return "Season dates not set";
     const start = new Date(`${activeSeason.start_date}T00:00:00`);
@@ -2446,15 +2509,21 @@ export default function App() {
             {leaderboardTop3.length === 0 ? <div className="hint">Add names + matches to populate.</div> : <div className="leaderRowGrid podiumGrid">{leaderboardTop3.map((p, i) => <LeaderCard key={p.pid} medal={["🥇","🥈","🥉"][i]} rank={i + 1} p={p} onClick={() => { setPlayerModalPid(p.pid); setPlayerModalOpen(true); }} form={matchesView.filter((m) => m.challengerPid === p.pid || m.opponentPid === p.pid).slice(0,5).map((m) => ((m.winnerId === "p1" && m.challengerPid === p.pid) || (m.winnerId === "p2" && m.opponentPid === p.pid)) ? "W" : "L")} />)}</div>}
             <div className="seasonHighlightsBanner" aria-label="Season highlights">
               <div className="seasonHighlightItem">
-                <span className="seasonHighlightLabel">🚀 Highest Climber</span>
-                <strong>{topClimber ? topClimber.name : "—"}</strong>
-                <span className="seasonHighlightValue">{topClimber && topClimber.ladderProgress > 0 ? `+${topClimber.ladderProgress} places` : "—"}</span>
+                <span className="seasonHighlightLabel">🚀 Highest Climbers</span>
+                <strong>
+                  {topClimbers.length
+                    ? topClimbers
+                        .map((group) => `${group.rank}. ${group.players.map((p) => p.name).join(" / ")} (+${group.progress})`)
+                        .join(" • ")
+                    : "—"}
+                </strong>
+                <span className="seasonHighlightValue">Top 3 upward progression</span>
               </div>
               <div className="seasonHighlightDivider" aria-hidden="true" />
               <div className="seasonHighlightItem">
                 <span className="seasonHighlightLabel">🎾 Most Active</span>
-                <strong>{seasonBannerStats.mostActive ? seasonBannerStats.mostActive.name : "—"}</strong>
-                <span className="seasonHighlightValue">{seasonBannerStats.mostActive ? `${seasonBannerStats.mostActive.seasonMatches} matches` : "—"}</span>
+                <strong>{seasonBannerStats.mostActive.length ? seasonBannerStats.mostActive.map((p) => p.name).join(" • ") : "—"}</strong>
+                <span className="seasonHighlightValue">{seasonBannerStats.mostActive.length ? `${seasonBannerStats.mostActiveMatches} matches` : "—"}</span>
               </div>
               <div className="seasonHighlightDivider" aria-hidden="true" />
               <div className="seasonHighlightItem">
@@ -2524,45 +2593,96 @@ export default function App() {
           <div className="cardHeader"><div><div className="cardTitle">Add Match</div><div className="hint">{divisionLabel} ladder • Add/Delete/Edit require PIN.</div></div></div>
           <div className="cardBody">
             {error ? <div className="errorBox">{error}</div> : null}
-            <div className="formGrid mobileStackFriendly">
-              <div>
-                <div className="label">Date</div>
-                <input className="textInput tallOnMobile" type="date" value={matchDate} onChange={(e) => setMatchDate(e.target.value)} disabled={locked} />
-              </div>
-              <div>
-                <div className="label">Position being played for</div>
-                <select className="textInput tallOnMobile" value={matchPos} onChange={(e) => setMatchPos(e.target.value)} disabled={locked}>
-                  {Array.from({ length: playerCount }, (_, i) => {
-                    const pos = i + 1;
-                    const p = players.find((x) => x.position === pos);
-                    const nm = p?.name?.trim();
-                    return <option key={pos} value={String(pos)}>#{pos}{nm ? ` (${nm})` : ""}</option>;
-                  })}
-                </select>
-                <div className="hint">Selected: {opponentLabel}</div>
-              </div>
-              <div>
-                <div className="label">Challenger</div>
-                <select className="textInput tallOnMobile" value={challengerPid} onChange={(e) => setChallengerPid(e.target.value)} disabled={locked}>
-                  <option value="">Select…</option>
-                  {selectablePlayers.map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
-                </select>
-                <div className="hint">Tip: add names first, then they appear here.</div>
-              </div>
-              <div>
-                <div className="label">Winner</div>
-                <select className="textInput tallOnMobile" value={winner} onChange={(e) => setWinner(e.target.value)} disabled={locked}>
-                  <option value="p1">{challenger?.name?.trim() ? challenger.name : "Challenger"}</option>
-                  <option value="p2">{opponent?.name?.trim() ? opponent.name : "Opponent"}</option>
-                </select>
-              </div>
-            </div>
+            <div className="matchEntryLayout scorecardEntryLayout">
+              <div className="matchPlayersPanel scorecardPlayersPanel">
+                <div className="scorecardHeaderRow">
+                  <div className="matchPanelHeading">Players</div>
+                  <div className="scoreSetHeadings" aria-hidden="true"><span>Set 1</span><span>Set 2</span><span>Set 3</span></div>
+                </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Score (From {challenger?.name?.trim() ? `${challenger.name}'s` : "Challenger's"} perspective)</div>
-              <input className="textInput tallOnMobile" value={score} onChange={(e) => setScore(e.target.value)} placeholder="e.g. 6-4 3-6 10-8" disabled={locked} />
-              <div className="hint">Valid: 6-x, 7-5, 7-6, or match tie-break 10+ (win by 2).</div>
-              <button className="btn fullWidthOnMobile" style={{ marginTop: 10 }} onClick={requestAddMatch} disabled={locked}>Add match</button>
+                <div className="matchPlayerRow scorecardPlayerRow">
+                  <div className="matchPlayerNumber">1</div>
+                  <div className="matchPlayerField">
+                    <div className="label">Challenger</div>
+                    <select
+                      className="textInput tallOnMobile matchPlayerSelect"
+                      value={challengerPid}
+                      onChange={(e) => setChallengerPid(e.target.value)}
+                      disabled={locked}
+                    >
+                      <option value="">Select challenger…</option>
+                      {selectablePlayers
+                        .filter((p) => p.pid !== opponent?.pid)
+                        .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="scoreCellGroup">
+                    {[0, 1, 2].map((col) => (
+                      <input key={col} className="scoreCell" type="text" inputMode="numeric" aria-label={`Challenger set ${col + 1}`} value={scoreCells[col]} onChange={(e) => updateScoreCell(0, col, e.target.value)} disabled={locked} />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="matchPlayerRow scorecardPlayerRow">
+                  <div className="matchPlayerNumber">2</div>
+                  <div className="matchPlayerField">
+                    <div className="label">Opponent</div>
+                    <select
+                      className="textInput tallOnMobile matchPlayerSelect"
+                      value={opponent?.pid || ""}
+                      onChange={(e) => {
+                        const selected = players.find((p) => p.pid === e.target.value);
+                        if (selected) setMatchPos(String(selected.position));
+                      }}
+                      disabled={locked}
+                    >
+                      {selectablePlayers
+                        .filter((p) => p.pid !== challengerPid)
+                        .map((p) => <option key={p.pid} value={p.pid}>#{p.position} — {p.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="scoreCellGroup">
+                    {[0, 1, 2].map((col) => (
+                      <input key={col} className="scoreCell" type="text" inputMode="numeric" aria-label={`Opponent set ${col + 1}`} value={scoreCells[3 + col]} onChange={(e) => updateScoreCell(1, col, e.target.value)} disabled={locked} />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="matchPositionNote">
+                  Playing for <strong>Position #{opponent?.position || matchPos}</strong>{opponent?.name?.trim() ? ` • currently ${opponent.name}` : ""}
+                </div>
+                <div className="hint scorecardHint">Leave Set 3 blank for a straight-sets result. A match tie-break can be entered normally, e.g. 10–8.</div>
+              </div>
+
+              <div className="matchDetailsPanel">
+                <div className="matchPanelHeading">Match details</div>
+                <div className="matchDetailsGrid">
+                  <div>
+                    <div className="label">Date</div>
+                    <input
+                      className="textInput tallOnMobile"
+                      type="date"
+                      value={matchDate}
+                      onChange={(e) => {
+                        matchDateManuallyChangedRef.current = true;
+                        setMatchDate(e.target.value);
+                      }}
+                      disabled={locked}
+                    />
+                  </div>
+                  <div>
+                    <div className="label">Winner</div>
+                    <div
+                      className={`textInput tallOnMobile autoWinnerField${scoreOutcome.valid ? " resolved" : ""}`}
+                      aria-live="polite"
+                      aria-label="Calculated match winner"
+                    >
+                      {scoreOutcome.label}
+                    </div>
+                  </div>
+                </div>
+                <button className="btn fullWidthOnMobile matchSubmitBtn" onClick={requestAddMatch} disabled={locked}>Add match</button>
+              </div>
             </div>
 
             {locked ? <div className="hint" style={{ marginTop: 10 }}>Locked: nothing is editable. Admin unlock to enter results.</div> : null}
@@ -2954,6 +3074,121 @@ const css = `
   .diff { font-weight: 900; font-variant-numeric: tabular-nums; }
   .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
+  .matchEntryLayout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
+    gap: 14px;
+    align-items: stretch;
+  }
+  .matchPlayersPanel, .matchDetailsPanel {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.025);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .matchPanelHeading {
+    font-size: 12px;
+    font-weight: 900;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 10px;
+  }
+  .matchPlayerRow {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+  .matchPlayerRow + .matchPlayerRow { margin-top: 9px; }
+  .matchPlayerNumber {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 900;
+  }
+  .matchPlayerField { min-width: 0; }
+  .matchPlayerField .label { margin-bottom: 4px; }
+  .matchPlayerSelect { font-weight: 700; }
+  .scorecardHeaderRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 164px;
+    gap: 10px;
+    align-items: end;
+  }
+  .scorecardHeaderRow .matchPanelHeading { margin-bottom: 6px; }
+  .scoreSetHeadings {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    gap: 10px;
+    justify-content: end;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 800;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+  }
+  .scorecardPlayerRow { grid-template-columns: 34px minmax(0, 1fr) 164px; }
+  .scoreCellGroup {
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    gap: 10px;
+    align-self: end;
+    justify-content: end;
+  }
+  .scoreCell {
+    width: 48px;
+    height: 42px;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.07);
+    color: var(--text);
+    text-align: center;
+    font-size: 16px;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+  }
+  .scoreCell:focus { border-color: rgba(255,255,255,0.38); }
+  .scoreCell:disabled { opacity: .58; }
+  .autoWinnerField {
+    display: flex;
+    align-items: center;
+    color: var(--muted);
+    cursor: default;
+    user-select: none;
+  }
+  .autoWinnerField.resolved {
+    color: var(--text);
+    font-weight: 800;
+  }
+  .scorecardHint { margin-top: 8px; }
+  .matchPositionNote {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.18);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .matchPositionNote strong { color: var(--text); }
+  .matchDetailsGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .matchScoreBlock { margin-top: 10px; }
+  .matchScoreInput { font-variant-numeric: tabular-nums; }
+  .matchSubmitBtn { margin-top: 10px; width: 100%; }
+
   .formGrid { display: grid; grid-template-columns: 1fr; gap: 10px; }
   @media (min-width: 980px) { .formGrid { grid-template-columns: repeat(5, 1fr); } }
 
@@ -3180,6 +3415,16 @@ const css = `
     }
     .fullWidthOnMobile { width: 100%; }
     .numText, .numInput { width: 56px; }
+    .matchEntryLayout { grid-template-columns: 1fr; gap: 10px; }
+    .matchPlayersPanel, .matchDetailsPanel { padding: 12px; }
+    .matchDetailsGrid { grid-template-columns: 1fr; }
+    .matchPlayerRow { grid-template-columns: 30px minmax(0, 1fr); gap: 8px; }
+    .scorecardHeaderRow { grid-template-columns: minmax(0, 1fr) 128px; gap: 6px; }
+    .scoreSetHeadings { grid-template-columns: repeat(3, 38px); gap: 7px; font-size: 9px; }
+    .scorecardPlayerRow { grid-template-columns: 28px minmax(0, 1fr) 128px; gap: 7px; }
+    .scoreCellGroup { grid-template-columns: repeat(3, 38px); gap: 7px; }
+    .scoreCell { width: 38px; height: 42px; }
+    .matchPlayerNumber { width: 28px; height: 28px; }
     .mobileSingle { grid-template-columns: 1fr !important; }
     .ladderViewHeader { align-items: stretch; }
     .ladderViewToggle { width: 100%; }
