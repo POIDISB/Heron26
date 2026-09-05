@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+﻿import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl =
   process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -25,6 +25,13 @@ function slugify(value) {
 function number(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+const VALID_DIVISIONS = new Set(["mens", "womens", "premier"]);
+
+function normalizeDivision(value) {
+  const division = String(value || "");
+  return VALID_DIVISIONS.has(division) ? division : "mens";
 }
 
 export default async function handler(req, res) {
@@ -126,6 +133,10 @@ export default async function handler(req, res) {
           key: `playerCount_${id}_womens`,
           value: "40",
         },
+        {
+          key: `playerCount_${id}_premier`,
+          value: "40",
+        },
       ];
 
       const settingResult = await supabase
@@ -143,7 +154,6 @@ export default async function handler(req, res) {
         season: inserted.data,
       });
     }
-
 
     if (action === "updateSeason") {
       const seasonId = String(payload.seasonId || "");
@@ -220,8 +230,7 @@ export default async function handler(req, res) {
 
     if (action === "setPublicDefault") {
       const seasonId = String(payload.seasonId || "");
-      const division =
-        payload.division === "womens" ? "womens" : "mens";
+      const division = normalizeDivision(payload.division);
 
       const exists = await supabase
         .from("seasons")
@@ -310,8 +319,7 @@ export default async function handler(req, res) {
       const players = incomingPlayers.map((player) => ({
         season_id: seasonId,
         pid: pidMap.get(String(player.pid || "")),
-        division:
-          player.division === "womens" ? "womens" : "mens",
+        division: normalizeDivision(player.division),
         position: number(player.position, 1),
         name: String(player.name || ""),
         matches_played: number(player.matchesPlayed),
@@ -339,8 +347,7 @@ export default async function handler(req, res) {
       const matches = incomingMatches.map((match) => ({
         id: String(match.id),
         season_id: seasonId,
-        division:
-          match.division === "womens" ? "womens" : "mens",
+        division: normalizeDivision(match.division),
         date: String(match.date || ""),
         position_played_for: number(
           match.positionPlayedFor,
@@ -400,6 +407,7 @@ export default async function handler(req, res) {
       const incomingPlayerIds = new Set(
         players.map((player) => String(player.pid))
       );
+
       const incomingMatchIds = new Set(
         matches.map((match) => String(match.id))
       );
@@ -473,6 +481,10 @@ export default async function handler(req, res) {
             {
               key: `playerCount_${seasonId}_womens`,
               value: String(number(counts.womens, 40)),
+            },
+            {
+              key: `playerCount_${seasonId}_premier`,
+              value: String(number(counts.premier, 40)),
             },
           ],
           {
