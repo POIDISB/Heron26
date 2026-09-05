@@ -914,7 +914,9 @@ export default function App() {
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [ladderView, setLadderView] = useState("live");
 
-  const current = state[activeDivision];
+  const current =
+  state[activeDivision] || createDivisionState(activeDivision);
+
   const { players, matches, playerCount } = current;
 
   const [cloudError, setCloudError] = useState("");
@@ -992,7 +994,10 @@ export default function App() {
     let alive = true;
     async function load() {
       setCloudError(""); setCloudLoading(true);
-      try { const cloudState = await fetchCloudState(activeSeasonId); if (alive) { setState(cloudState); setDirty(false); } }
+      try { const cloudState = await fetchCloudState(activeSeasonId); if (alive) { setState({
+  ...defaultState(),
+  ...cloudState,
+}); setDirty(false); } }
       catch (e) { if (alive) setCloudError(String(e?.message || e || "Failed to load from cloud.")); }
       finally { if (alive) setCloudLoading(false); }
     }
@@ -1045,12 +1050,14 @@ export default function App() {
     ref?.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function patchCurrentDivision(patchFn) {
-    setState((prev) => ({
-      ...prev,
-      [activeDivision]: patchFn(prev[activeDivision]),
-    }));
-  }
+function patchCurrentDivision(patchFn) {
+  setState((prev) => ({
+    ...prev,
+    [activeDivision]: patchFn(
+      prev[activeDivision] || createDivisionState(activeDivision)
+    ),
+  }));
+}
 
   function openPin(purpose, payload) {
     setPinPurpose(purpose);
