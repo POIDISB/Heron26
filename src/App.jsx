@@ -1893,7 +1893,11 @@ function patchCurrentDivision(patchFn) {
     // Withdrawn players are anchored to the bottom. Active players can only
     // be dropped within the active section, never below withdrawn players.
     const active = sourcePlayers
-      .filter((p) => !isWithdrawnPlayer(p))
+      .filter(
+        (p) =>
+          !isWithdrawnPlayer(p) &&
+          String(p.name || "").trim().length > 0
+      )
       .sort((a, b) => a.position - b.position);
 
     const withdrawn = sourcePlayers
